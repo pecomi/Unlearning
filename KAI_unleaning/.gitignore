@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Data & Logs
+data/
+!src/data/
+!src/data/*.py
+checkpoints/
+logs/
+runs/
+*.log
+
+# Claude Code (per-user settings only)
+.claude/settings.local.json
+CLAUDE.md
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Wandb
+wandb/
+
+# Deploy script
+deploy.sh

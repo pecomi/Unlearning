@@ -1,0 +1,70 @@
+# KAI Unlearning - Full Class Forgetting Configuration
+# Forgets an entire class from the model
+
+# Global Settings
+seed: 42
+device: cuda
+cuda_visible_devices: "0"
+num_workers: 4
+pin_memory: false
+
+# Project Paths
+data_dir: ./data
+checkpoint_dir: ./runs/full_class  # Task-specific output directory
+baseline_checkpoint: ./checkpoints/baseline/trained_model.pth  # Shared baseline
+log_dir: ./logs
+
+# Data Configuration
+data:
+  name: cifar10
+  split_strategy: all_labels  # Forget all classes
+  forget_labels: null
+  forget_ratio: 0.1
+  val_ratio: 0
+
+# Model Configuration
+model:
+  name: resnet18
+  pretrained: false
+  num_classes: 10
+
+# Training Configuration (for retrain mode)
+training:
+  epochs: 50
+  batch_size: 64
+  learning_rate: 0.1
+  momentum: 0.9
+  weight_decay: 5e-4
+  scheduler:
+    name: cosine
+    warmup_epochs: 1
+  optimizer:
+    name: sgd
+
+# Unlearning Configuration (SSD)
+unlearning:
+  name: ssd
+  dampening_constant: 1.0  # Lambda parameter in SSD
+  selection_weighting: 5.0  # Alpha parameter for synapse selection threshold
+  fisher_batch_size: 8  # Batch size for Fisher (importance) computation; paper/official repo default
+
+# Evaluation Configuration
+evaluation:
+  batch_size: 128
+  metrics:
+    - accuracy
+    - forget_quality
+    - model_utility
+
+# Wandb Configuration
+wandb:
+  project: kai-unlearning_v4
+  entity: null
+  run_name_base: CIFAR10-ResNet18-SSD-FullClass  # Base name, mode suffix will be added
+  mode: online
+
+# Logging Configuration
+logging:
+  level: INFO
+  log_to_file: true
+  rich_formatting: true
