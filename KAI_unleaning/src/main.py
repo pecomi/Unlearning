@@ -211,8 +211,12 @@ def main():
 
         logger.info(f"[cyan]Unlearning Configuration:[/cyan]")
         logger.info(f"  • Method: {unlearning_name}")
-        logger.info(f"  • Dampening constant (λ): {unlearning_config.get('dampening_constant', 1.0)}")
-        logger.info(f"  • Selection weighting (α): {unlearning_config.get('selection_weighting', 10.0)}")
+        if unlearning_name == "ssd":
+            logger.info(f"  • Dampening constant (λ): {unlearning_config.get('dampening_constant', 1.0)}")
+            logger.info(f"  • Selection weighting (α): {unlearning_config.get('selection_weighting', 10.0)}")
+        elif unlearning_name == "ekfac_influence":
+            logger.info(f"  • Step size: {unlearning_config.get('step_size', 1.0)}")
+            logger.info(f"  • Damping: {unlearning_config.get('damping', 1e-3)}")
         logger.info(f"  • Fisher batch size: {fisher_batch_size}\n")
 
         # unlearning 팩토리를 통해 config에 명시된 언러닝 방식 로드
@@ -221,6 +225,10 @@ def main():
             model=model,
             dampening_constant=unlearning_config.get("dampening_constant", 1.0),
             selection_weighting=unlearning_config.get("selection_weighting", 10.0),
+            step_size=unlearning_config.get("step_size", 1.0),
+            damping=unlearning_config.get("damping", 1e-3),
+            max_curvature_batches=unlearning_config.get("max_curvature_batches", None),
+            max_forget_batches=unlearning_config.get("max_forget_batches", None),
             device=config.get("device", "cuda")
         )
 

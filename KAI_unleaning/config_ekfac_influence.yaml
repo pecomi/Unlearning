@@ -1,0 +1,63 @@
+# KAI Unlearning - EKFAC Influence Configuration
+# Influence-function unlearning using the EKFAC inverse-Fisher approximation.
+
+seed: 42
+device: cuda
+cuda_visible_devices: "0"
+num_workers: 4
+pin_memory: false
+
+data_dir: ./data
+checkpoint_dir: ./runs/ekfac_influence
+baseline_checkpoint: ./checkpoints/baseline/trained_model.pth
+log_dir: ./logs
+
+data:
+  name: cifar10
+  split_strategy: label_based
+  forget_labels: [4]
+  forget_ratio: 0.1
+  val_ratio: 0
+
+model:
+  name: resnet18
+  pretrained: false
+  num_classes: 10
+
+training:
+  epochs: 50
+  batch_size: 64
+  learning_rate: 0.1
+  momentum: 0.9
+  weight_decay: 5e-4
+  scheduler:
+    name: cosine
+    warmup_epochs: 1
+  optimizer:
+    name: sgd
+
+unlearning:
+  name: ekfac_influence
+  fisher_batch_size: 8
+  step_size: 1.0
+  damping: 1e-3
+  max_curvature_batches: null
+  max_forget_batches: null
+
+evaluation:
+  batch_size: 128
+  metrics:
+    - accuracy
+    - forget_quality
+    - model_utility
+
+wandb:
+  project: kai-unlearning_v4
+  entity: null
+  run_name_base: CIFAR10-ResNet18-EKFACInfluence-Class4
+  mode: online
+
+logging:
+  level: INFO
+  log_to_file: true
+  rich_formatting: true

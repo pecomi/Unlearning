@@ -6,6 +6,7 @@ Allows plugin-like unlearning algorithm registration and instantiation.
 from typing import Dict, Type
 
 from .base import BaseUnlearning
+from .ekfac_influence import EKFACInfluenceUnlearning
 from .ssd import SSDUnlearning
 
 
@@ -42,3 +43,4 @@ class UnlearningFactory:
 
 # Register built-in algorithms
 UnlearningFactory.register("ssd", SSDUnlearning)
+UnlearningFactory.register("ekfac_influence", EKFACInfluenceUnlearning)
