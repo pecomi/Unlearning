@@ -1,5 +1,5 @@
-# KAI Unlearning - EKFAC Influence Configuration
-# Influence-function unlearning using the EKFAC inverse-Fisher approximation.
+# KAI Unlearning - EKFAC Influence Random Forgetting Configuration
+# Forgets a random subset with EKFAC influence-function unlearning.
 
 seed: 42
 device: cuda
@@ -8,14 +8,14 @@ num_workers: 4
 pin_memory: false
 
 data_dir: ./data
-checkpoint_dir: ./runs/ekfac_influence
+checkpoint_dir: ./runs/ekfac_random
 baseline_checkpoint: ./checkpoints/baseline/trained_model.pth
 log_dir: ./logs
 
 data:
   name: cifar10
-  split_strategy: label_based
-  forget_labels: [4]
+  split_strategy: random
+  forget_labels: null
   forget_ratio: 0.1
   val_ratio: 0
 
@@ -54,7 +54,7 @@ evaluation:
 wandb:
   project: kai-unlearning_v4
   entity: null
-  run_name_base: CIFAR10-ResNet18-EKFACInfluence-Class4
+  run_name_base: CIFAR10-ResNet18-EKFACInfluence-Random10
   mode: online
 
 logging:
