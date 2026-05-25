@@ -184,8 +184,8 @@ def main():
         test_loss, test_acc = trainer.evaluate(test_loader)
 
         logger.log_metrics({
-            "train/test_accuracy": test_acc,
-            "train/test_loss": test_loss
+            "test_accuracy": test_acc,
+            "test_loss": test_loss
         }, step=training_config.get("epochs", 100), prefix="train/")
 
 
@@ -217,6 +217,7 @@ def main():
         elif unlearning_name == "ekfac_influence":
             logger.info(f"  • Step size: {unlearning_config.get('step_size', 1.0)}")
             logger.info(f"  • Damping: {unlearning_config.get('damping', 1e-3)}")
+            logger.info(f"  • Update norm clip: {unlearning_config.get('update_norm_clip', None)}")
         logger.info(f"  • Fisher batch size: {fisher_batch_size}\n")
 
         # unlearning 팩토리를 통해 config에 명시된 언러닝 방식 로드
@@ -227,6 +228,7 @@ def main():
             selection_weighting=unlearning_config.get("selection_weighting", 10.0),
             step_size=unlearning_config.get("step_size", 1.0),
             damping=unlearning_config.get("damping", 1e-3),
+            update_norm_clip=unlearning_config.get("update_norm_clip", None),
             max_curvature_batches=unlearning_config.get("max_curvature_batches", None),
             max_forget_batches=unlearning_config.get("max_forget_batches", None),
             device=config.get("device", "cuda")
@@ -264,10 +266,19 @@ def main():
         logger.print("\n[cyan]▶ Evaluating Unlearned Model on Test Set[/cyan]")
         test_loss, test_acc = trainer.evaluate(test_loader)
 
-        logger.log_metrics({
-            "unlearn/test_accuracy": test_acc,
-            "unlearn/test_loss": test_loss
-        }, step=0, prefix="unlearn/")
+        logger.print("\n[cyan]▶ Computing Unlearning Metrics[/cyan]")
+        metrics_calculator = MetricsCalculator(
+            device=config.get("device", "cuda"),
+            dataset_name=dataset_name
+        )
+        unlearn_metrics = metrics_calculator.compute_all_metrics(
+            model=model.model,
+            retain_loader=retain_loader,
+            forget_loader=forget_loader,
+            test_loader=test_loader,
+            logger=logger
+        )
+        logger.log_metrics(unlearn_metrics, step=0, prefix="unlearn/")
 
 
     # Retrain 모드
@@ -307,8 +318,8 @@ def main():
         test_loss, test_acc = retrain_trainer.evaluate(test_loader)
 
         logger.log_metrics({
-            "retrain/test_accuracy": test_acc,
-            "retrain/test_loss": test_loss
+            "test_accuracy": test_acc,
+            "test_loss": test_loss
         }, step=training_config.get("epochs", 100), prefix="retrain/")
 
         retrain_trainer.finish()

@@ -45,6 +45,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         model,
         step_size: float = 1.0,
         damping: float = 1e-3,
+        update_norm_clip: Optional[float] = None,
         max_curvature_batches: Optional[int] = None,
         max_forget_batches: Optional[int] = None,
         device: str = "cuda",
@@ -53,6 +54,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         super().__init__(model, **kwargs)
         self.step_size = step_size
         self.damping = damping
+        self.update_norm_clip = update_norm_clip
         self.max_curvature_batches = max_curvature_batches
         self.max_forget_batches = max_forget_batches
         self.device = device
@@ -68,6 +70,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             logger.print("\n[bold yellow]=== EKFAC Influence Unlearning ===[/bold yellow]")
             logger.info(f"  Step size: [cyan]{self.step_size}[/cyan]")
             logger.info(f"  Damping: [cyan]{self.damping}[/cyan]")
+            logger.info(f"  Update norm clip: [cyan]{self.update_norm_clip or 'disabled'}[/cyan]")
             logger.info(f"  Curvature batches: [cyan]{self.max_curvature_batches or 'all'}[/cyan]")
             logger.info(f"  Forget batches: [cyan]{self.max_forget_batches or 'all'}[/cyan]")
 
@@ -83,18 +86,24 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         if logger:
             logger.info("  Influence update applied")
             logger.info(f"    - Updated parameters: {update_stats['updated_params']:,}")
-            logger.info(f"    - Update norm: {update_stats['update_norm']:.6f}")
+            logger.info(f"    - Raw update norm: {update_stats['raw_update_norm']:.6f}")
+            logger.info(f"    - Applied update norm: {update_stats['update_norm']:.6f}")
+            logger.info(f"    - Clip coefficient: {update_stats['clip_coef']:.6f}")
             logger.log_metrics({
                 "curvature_batches": float(curvature_stats["batches"]),
                 "forget_batches": float(forget_stats["batches"]),
                 "forget_grad_norm": forget_stats["grad_norm"],
+                "raw_update_norm": update_stats["raw_update_norm"],
                 "update_norm": update_stats["update_norm"],
+                "clip_coef": update_stats["clip_coef"],
+                "nonfinite_update_tensors": float(update_stats["nonfinite_update_tensors"]),
             }, step=0, prefix="unlearning/")
 
         return {
             "method": self.name,
             "step_size": self.step_size,
             "damping": self.damping,
+            "update_norm_clip": self.update_norm_clip,
             "curvature_stats": curvature_stats,
             "forget_stats": forget_stats,
             "update_stats": update_stats,
@@ -309,8 +318,9 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             for param_name, _ in module.named_parameters(recurse=False):
                 module_by_param[f"{state.name}.{param_name}"] = state
 
-        update_norm_sq = 0.0
-        updated_params = 0
+        updates = {}
+        raw_update_norm_sq = 0.0
+        nonfinite_update_tensors = 0
 
         with torch.no_grad():
             for name, param in self.model.model.named_parameters():
@@ -319,13 +329,35 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
 
                 update = self._precondition_gradient(name, forget_grads[name], module_by_param.get(name))
                 update = self.step_size * update
+                if not torch.isfinite(update).all():
+                    nonfinite_update_tensors += 1
+                    update = torch.nan_to_num(update, nan=0.0, posinf=0.0, neginf=0.0)
+
+                updates[name] = update
+                raw_update_norm_sq += update.pow(2).sum().item()
+
+            raw_update_norm = raw_update_norm_sq ** 0.5
+            clip_coef = 1.0
+            if self.update_norm_clip is not None and raw_update_norm > self.update_norm_clip:
+                clip_coef = self.update_norm_clip / (raw_update_norm + 1e-12)
+
+            update_norm_sq = 0.0
+            updated_params = 0
+            for name, param in self.model.model.named_parameters():
+                if name not in updates:
+                    continue
+
+                update = updates[name] * clip_coef
                 param.add_(update)
                 update_norm_sq += update.pow(2).sum().item()
                 updated_params += param.numel()
 
         return {
             "updated_params": updated_params,
+            "raw_update_norm": raw_update_norm,
             "update_norm": update_norm_sq ** 0.5,
+            "clip_coef": clip_coef,
+            "nonfinite_update_tensors": nonfinite_update_tensors,
         }
 
     def _precondition_gradient(
@@ -363,4 +395,5 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "method": self.name,
             "step_size": self.step_size,
             "damping": self.damping,
+            "update_norm_clip": self.update_norm_clip,
         }, save_path)

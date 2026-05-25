@@ -39,8 +39,9 @@ training:
 unlearning:
   name: ekfac_influence
   fisher_batch_size: 8
-  step_size: 1.0
-  damping: 1e-3
+  step_size: 0.01
+  damping: 0.05
+  update_norm_clip: 10.0
   max_curvature_batches: null
   max_forget_batches: null
 
