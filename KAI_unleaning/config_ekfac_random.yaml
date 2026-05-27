@@ -42,6 +42,7 @@ unlearning:
   step_size: 0.01
   damping: 0.05
   update_norm_clip: 10.0
+  layer_update_norm_ratio: 0.01
   max_curvature_batches: null
   max_forget_batches: null
 

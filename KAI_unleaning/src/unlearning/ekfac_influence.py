@@ -46,6 +46,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         step_size: float = 0.01,
         damping: float = 1e-3,
         update_norm_clip: Optional[float] = None,
+        layer_update_norm_ratio: Optional[float] = None,
         max_curvature_batches: Optional[int] = None,
         max_forget_batches: Optional[int] = None,
         device: str = "cuda",
@@ -55,6 +56,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         self.step_size = step_size
         self.damping = damping
         self.update_norm_clip = update_norm_clip
+        self.layer_update_norm_ratio = layer_update_norm_ratio
         self.max_curvature_batches = max_curvature_batches
         self.max_forget_batches = max_forget_batches
         self.device = device
@@ -71,6 +73,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             logger.info(f"  Step size: [cyan]{self.step_size}[/cyan]")
             logger.info(f"  Damping: [cyan]{self.damping}[/cyan]")
             logger.info(f"  Update norm clip: [cyan]{self.update_norm_clip or 'disabled'}[/cyan]")
+            logger.info(f"  Layer update norm ratio: [cyan]{self.layer_update_norm_ratio or 'disabled'}[/cyan]")
             logger.info(f"  Curvature batches: [cyan]{self.max_curvature_batches or 'all'}[/cyan]")
             logger.info(f"  Forget batches: [cyan]{self.max_forget_batches or 'all'}[/cyan]")
 
@@ -104,6 +107,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "step_size": self.step_size,
             "damping": self.damping,
             "update_norm_clip": self.update_norm_clip,
+            "layer_update_norm_ratio": self.layer_update_norm_ratio,
             "curvature_stats": curvature_stats,
             "forget_stats": forget_stats,
             "update_stats": update_stats,
@@ -333,6 +337,13 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                     nonfinite_update_tensors += 1
                     update = torch.nan_to_num(update, nan=0.0, posinf=0.0, neginf=0.0)
 
+                if self.layer_update_norm_ratio is not None:
+                    param_norm = param.detach().norm().item()
+                    layer_update_norm = update.norm().item()
+                    layer_limit = self.layer_update_norm_ratio * param_norm
+                    if layer_limit > 0.0 and layer_update_norm > layer_limit:
+                        update = update * (layer_limit / (layer_update_norm + 1e-12))
+
                 updates[name] = update
                 raw_update_norm_sq += update.pow(2).sum().item()
 
@@ -396,4 +407,5 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "step_size": self.step_size,
             "damping": self.damping,
             "update_norm_clip": self.update_norm_clip,
+            "layer_update_norm_ratio": self.layer_update_norm_ratio,
         }, save_path)

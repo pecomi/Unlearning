@@ -218,6 +218,7 @@ def main():
             logger.info(f"  • Step size: {unlearning_config.get('step_size', 1.0)}")
             logger.info(f"  • Damping: {unlearning_config.get('damping', 1e-3)}")
             logger.info(f"  • Update norm clip: {unlearning_config.get('update_norm_clip', None)}")
+            logger.info(f"  • Layer update norm ratio: {unlearning_config.get('layer_update_norm_ratio', None)}")
         logger.info(f"  • Fisher batch size: {fisher_batch_size}\n")
 
         # unlearning 팩토리를 통해 config에 명시된 언러닝 방식 로드
@@ -229,6 +230,7 @@ def main():
             step_size=unlearning_config.get("step_size", 1.0),
             damping=unlearning_config.get("damping", 1e-3),
             update_norm_clip=unlearning_config.get("update_norm_clip", None),
+            layer_update_norm_ratio=unlearning_config.get("layer_update_norm_ratio", None),
             max_curvature_batches=unlearning_config.get("max_curvature_batches", None),
             max_forget_batches=unlearning_config.get("max_forget_batches", None),
             device=config.get("device", "cuda")
