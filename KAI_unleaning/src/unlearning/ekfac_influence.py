@@ -43,7 +43,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
     def __init__(
         self,
         model,
-        step_size: float = 1.0,
+        step_size: float = 0.01,
         damping: float = 1e-3,
         update_norm_clip: Optional[float] = None,
         max_curvature_batches: Optional[int] = None,
