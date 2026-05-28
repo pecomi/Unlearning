@@ -219,6 +219,10 @@ def main():
             logger.info(f"  • Damping: {unlearning_config.get('damping', 1e-3)}")
             logger.info(f"  • Update norm clip: {unlearning_config.get('update_norm_clip', None)}")
             logger.info(f"  • Layer update norm ratio: {unlearning_config.get('layer_update_norm_ratio', None)}")
+            logger.info(f"  • Unlearn steps: {unlearning_config.get('num_unlearn_steps', 1)}")
+            logger.info(f"  • Recompute curvature each step: {unlearning_config.get('recompute_curvature_each_step', False)}")
+            logger.info(f"  • Eval interval: {unlearning_config.get('unlearn_eval_interval', 1)}")
+            logger.info(f"  • Max eval batches: {unlearning_config.get('max_eval_batches', None)}")
         logger.info(f"  • Fisher batch size: {fisher_batch_size}\n")
 
         # unlearning 팩토리를 통해 config에 명시된 언러닝 방식 로드
@@ -231,6 +235,10 @@ def main():
             damping=unlearning_config.get("damping", 1e-3),
             update_norm_clip=unlearning_config.get("update_norm_clip", None),
             layer_update_norm_ratio=unlearning_config.get("layer_update_norm_ratio", None),
+            num_unlearn_steps=unlearning_config.get("num_unlearn_steps", 1),
+            recompute_curvature_each_step=unlearning_config.get("recompute_curvature_each_step", False),
+            unlearn_eval_interval=unlearning_config.get("unlearn_eval_interval", 1),
+            max_eval_batches=unlearning_config.get("max_eval_batches", None),
             max_curvature_batches=unlearning_config.get("max_curvature_batches", None),
             max_forget_batches=unlearning_config.get("max_forget_batches", None),
             device=config.get("device", "cuda")
@@ -255,6 +263,12 @@ def main():
         result = unlearning.unlearn(
             forget_loader=fisher_forget_loader,
             train_loader=fisher_train_loader,
+            eval_loaders={
+                "retain": retain_loader,
+                "forget": forget_loader,
+                "val": val_loader,
+                "test": test_loader,
+            },
             logger=logger
         )
 

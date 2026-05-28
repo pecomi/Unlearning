@@ -47,6 +47,10 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         damping: float = 1e-3,
         update_norm_clip: Optional[float] = None,
         layer_update_norm_ratio: Optional[float] = None,
+        num_unlearn_steps: int = 1,
+        recompute_curvature_each_step: bool = False,
+        unlearn_eval_interval: int = 1,
+        max_eval_batches: Optional[int] = None,
         max_curvature_batches: Optional[int] = None,
         max_forget_batches: Optional[int] = None,
         device: str = "cuda",
@@ -57,6 +61,10 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         self.damping = damping
         self.update_norm_clip = update_norm_clip
         self.layer_update_norm_ratio = layer_update_norm_ratio
+        self.num_unlearn_steps = max(1, int(num_unlearn_steps))
+        self.recompute_curvature_each_step = recompute_curvature_each_step
+        self.unlearn_eval_interval = max(0, int(unlearn_eval_interval))
+        self.max_eval_batches = max_eval_batches
         self.max_curvature_batches = max_curvature_batches
         self.max_forget_batches = max_forget_batches
         self.device = device
@@ -66,6 +74,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
 
     def unlearn(self, forget_loader, train_loader, **kwargs) -> dict:
         logger = kwargs.get("logger")
+        eval_loaders = kwargs.get("eval_loaders", {})
         model = self.model.model.to(self.device)
 
         if logger:
@@ -74,33 +83,57 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             logger.info(f"  Damping: [cyan]{self.damping}[/cyan]")
             logger.info(f"  Update norm clip: [cyan]{self.update_norm_clip or 'disabled'}[/cyan]")
             logger.info(f"  Layer update norm ratio: [cyan]{self.layer_update_norm_ratio or 'disabled'}[/cyan]")
+            logger.info(f"  Unlearn steps: [cyan]{self.num_unlearn_steps}[/cyan]")
+            logger.info(f"  Recompute curvature each step: [cyan]{self.recompute_curvature_each_step}[/cyan]")
+            logger.info(f"  Eval interval: [cyan]{self.unlearn_eval_interval or 'disabled'}[/cyan]")
+            logger.info(f"  Max eval batches: [cyan]{self.max_eval_batches or 'all'}[/cyan]")
             logger.info(f"  Curvature batches: [cyan]{self.max_curvature_batches or 'all'}[/cyan]")
             logger.info(f"  Forget batches: [cyan]{self.max_forget_batches or 'all'}[/cyan]")
 
+        step_results = []
         self._register_hooks()
         try:
             curvature_stats = self._estimate_ekfac_curvature(train_loader, logger)
-            forget_grads, forget_stats = self._compute_forget_gradient(forget_loader, logger)
+
+            for unlearn_step in range(self.num_unlearn_steps):
+                if self.recompute_curvature_each_step and unlearn_step > 0:
+                    curvature_stats = self._estimate_ekfac_curvature(train_loader, logger)
+
+                forget_grads, forget_stats = self._compute_forget_gradient(forget_loader, logger)
+                update_stats = self._apply_influence_update(forget_grads)
+
+                step_result = {
+                    "step": unlearn_step + 1,
+                    "curvature_stats": curvature_stats,
+                    "forget_stats": forget_stats,
+                    "update_stats": update_stats,
+                }
+                step_results.append(step_result)
+
+                if logger:
+                    logger.info(f"  Influence update applied ({unlearn_step + 1}/{self.num_unlearn_steps})")
+                    logger.info(f"    - Updated parameters: {update_stats['updated_params']:,}")
+                    logger.info(f"    - Raw update norm: {update_stats['raw_update_norm']:.6f}")
+                    logger.info(f"    - Applied update norm: {update_stats['update_norm']:.6f}")
+                    logger.info(f"    - Clip coefficient: {update_stats['clip_coef']:.6f}")
+                    logger.log_metrics({
+                        "curvature_batches": float(curvature_stats["batches"]),
+                        "forget_batches": float(forget_stats["batches"]),
+                        "forget_grad_norm": forget_stats["grad_norm"],
+                        "raw_update_norm": update_stats["raw_update_norm"],
+                        "update_norm": update_stats["update_norm"],
+                        "clip_coef": update_stats["clip_coef"],
+                        "nonfinite_update_tensors": float(update_stats["nonfinite_update_tensors"]),
+                    }, step=unlearn_step + 1, prefix="unlearning/")
+
+                    if self.unlearn_eval_interval and (unlearn_step + 1) % self.unlearn_eval_interval == 0:
+                        eval_metrics = self._evaluate_loaders(eval_loaders)
+                        if eval_metrics:
+                            logger.log_metrics(eval_metrics, step=unlearn_step + 1, prefix="unlearning_eval/")
         finally:
             self._remove_hooks()
 
-        update_stats = self._apply_influence_update(forget_grads)
-
-        if logger:
-            logger.info("  Influence update applied")
-            logger.info(f"    - Updated parameters: {update_stats['updated_params']:,}")
-            logger.info(f"    - Raw update norm: {update_stats['raw_update_norm']:.6f}")
-            logger.info(f"    - Applied update norm: {update_stats['update_norm']:.6f}")
-            logger.info(f"    - Clip coefficient: {update_stats['clip_coef']:.6f}")
-            logger.log_metrics({
-                "curvature_batches": float(curvature_stats["batches"]),
-                "forget_batches": float(forget_stats["batches"]),
-                "forget_grad_norm": forget_stats["grad_norm"],
-                "raw_update_norm": update_stats["raw_update_norm"],
-                "update_norm": update_stats["update_norm"],
-                "clip_coef": update_stats["clip_coef"],
-                "nonfinite_update_tensors": float(update_stats["nonfinite_update_tensors"]),
-            }, step=0, prefix="unlearning/")
+        final_result = step_results[-1]
 
         return {
             "method": self.name,
@@ -108,9 +141,14 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "damping": self.damping,
             "update_norm_clip": self.update_norm_clip,
             "layer_update_norm_ratio": self.layer_update_norm_ratio,
-            "curvature_stats": curvature_stats,
-            "forget_stats": forget_stats,
-            "update_stats": update_stats,
+            "num_unlearn_steps": self.num_unlearn_steps,
+            "recompute_curvature_each_step": self.recompute_curvature_each_step,
+            "unlearn_eval_interval": self.unlearn_eval_interval,
+            "max_eval_batches": self.max_eval_batches,
+            "curvature_stats": final_result["curvature_stats"],
+            "forget_stats": final_result["forget_stats"],
+            "update_stats": final_result["update_stats"],
+            "step_results": step_results,
         }
 
     def _register_hooks(self) -> None:
@@ -316,6 +354,48 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         grad_norm = torch.sqrt(sum(grad.pow(2).sum() for grad in grads.values())).item()
         return grads, {"batches": batches, "samples": total, "grad_norm": grad_norm}
 
+    def _evaluate_loaders(self, eval_loaders: dict) -> dict:
+        metrics = {}
+        if not eval_loaders:
+            return metrics
+
+        model = self.model.model
+        model.eval()
+        criterion = nn.CrossEntropyLoss()
+
+        with torch.no_grad():
+            for loader_name, dataloader in eval_loaders.items():
+                if dataloader is None or len(dataloader.dataset) == 0:
+                    continue
+
+                total_loss = 0.0
+                total_correct = 0
+                total_samples = 0
+                batches = 0
+
+                for inputs, targets in dataloader:
+                    if self.max_eval_batches is not None and batches >= self.max_eval_batches:
+                        break
+
+                    inputs = inputs.to(self.device)
+                    targets = targets.to(self.device)
+                    outputs = model(inputs)
+                    loss = criterion(outputs, targets)
+
+                    total_loss += loss.item() * inputs.size(0)
+                    total_correct += outputs.argmax(dim=1).eq(targets).sum().item()
+                    total_samples += inputs.size(0)
+                    batches += 1
+
+                if total_samples == 0:
+                    continue
+
+                metrics[f"{loader_name}_loss"] = total_loss / total_samples
+                metrics[f"{loader_name}_accuracy"] = total_correct / total_samples
+                metrics[f"{loader_name}_samples"] = float(total_samples)
+
+        return metrics
+
     def _apply_influence_update(self, forget_grads: Dict[str, torch.Tensor]) -> dict:
         module_by_param = {}
         for module, state in self._states.items():
@@ -408,4 +488,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "damping": self.damping,
             "update_norm_clip": self.update_norm_clip,
             "layer_update_norm_ratio": self.layer_update_norm_ratio,
+            "num_unlearn_steps": self.num_unlearn_steps,
+            "recompute_curvature_each_step": self.recompute_curvature_each_step,
+            "unlearn_eval_interval": self.unlearn_eval_interval,
+            "max_eval_batches": self.max_eval_batches,
         }, save_path)
