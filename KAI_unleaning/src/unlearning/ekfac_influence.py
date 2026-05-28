@@ -90,6 +90,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             logger.info(f"  Forget batches: [cyan]{self.max_forget_batches or 'all'}[/cyan]")
 
         step_results = []
+        eval_history = []
         self._register_hooks()
         try:
             curvature_stats = self._estimate_ekfac_curvature(train_loader, logger)
@@ -128,11 +129,18 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                     if self.unlearn_eval_interval and (unlearn_step + 1) % self.unlearn_eval_interval == 0:
                         eval_metrics = self._evaluate_loaders(eval_loaders)
                         if eval_metrics:
+                            eval_history.append({
+                                "step": unlearn_step + 1,
+                                **eval_metrics,
+                            })
+                            step_result["eval_metrics"] = eval_metrics
                             logger.log_metrics(eval_metrics, step=unlearn_step + 1, prefix="unlearning_eval/")
         finally:
             self._remove_hooks()
 
         final_result = step_results[-1]
+        if logger and eval_history:
+            self._log_validation_history_plot(eval_history, logger)
 
         return {
             "method": self.name,
@@ -148,6 +156,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "forget_stats": final_result["forget_stats"],
             "update_stats": final_result["update_stats"],
             "step_results": step_results,
+            "eval_history": eval_history,
         }
 
     def _register_hooks(self) -> None:
@@ -415,6 +424,49 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 metrics[f"{loader_name}_samples"] = float(total_samples)
 
         return metrics
+
+    def _log_validation_history_plot(self, eval_history, logger=None) -> None:
+        try:
+            import matplotlib.pyplot as plt
+            import wandb
+        except ImportError:
+            if logger:
+                logger.warning("Skipping validation history plot because matplotlib or wandb is unavailable.")
+            return
+
+        if wandb.run is None:
+            return
+
+        steps = [record["step"] for record in eval_history]
+        loss_metrics = ["retain_val_loss", "forget_val_loss"]
+        accuracy_metrics = ["retain_val_accuracy", "forget_val_accuracy"]
+
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+        for metric_name in loss_metrics:
+            values = [record.get(metric_name) for record in eval_history]
+            if any(value is not None for value in values):
+                axes[0].plot(steps, values, marker="o", label=metric_name.replace("_", " "))
+        axes[0].set_title("Validation Loss During Unlearning")
+        axes[0].set_xlabel("Unlearn step")
+        axes[0].set_ylabel("Loss")
+        axes[0].grid(True, alpha=0.3)
+        axes[0].legend()
+
+        for metric_name in accuracy_metrics:
+            values = [record.get(metric_name) for record in eval_history]
+            if any(value is not None for value in values):
+                axes[1].plot(steps, values, marker="o", label=metric_name.replace("_", " "))
+        axes[1].set_title("Validation Accuracy During Unlearning")
+        axes[1].set_xlabel("Unlearn step")
+        axes[1].set_ylabel("Accuracy")
+        axes[1].set_ylim(0.0, 1.0)
+        axes[1].grid(True, alpha=0.3)
+        axes[1].legend()
+
+        fig.tight_layout()
+        wandb.log({"unlearning_eval/validation_history": wandb.Image(fig)}, step=steps[-1])
+        plt.close(fig)
 
     def _apply_influence_update(self, forget_grads: Dict[str, torch.Tensor]) -> dict:
         named_params = dict(self.model.model.named_parameters())

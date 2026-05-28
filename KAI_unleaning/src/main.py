@@ -281,23 +281,30 @@ def main():
         unlearning.save_unlearned_model(str(checkpoint_path))
         logger.success(f"  ✓ Saved to: {checkpoint_path}")
 
-        # Test set 평가
-        logger.print("\n[cyan]▶ Evaluating Unlearned Model on Test Set[/cyan]")
-        test_loss, test_acc = trainer.evaluate(test_loader)
+        if config.get("evaluation.use_test_during_unlearn", False):
+            # Test set evaluation is useful for final reporting, but should stay
+            # disabled while tuning unlearning hyperparameters.
+            logger.print("\n[cyan]▶ Evaluating Unlearned Model on Test Set[/cyan]")
+            test_loss, test_acc = trainer.evaluate(test_loader)
 
-        logger.print("\n[cyan]▶ Computing Unlearning Metrics[/cyan]")
-        metrics_calculator = MetricsCalculator(
-            device=config.get("device", "cuda"),
-            dataset_name=dataset_name
-        )
-        unlearn_metrics = metrics_calculator.compute_all_metrics(
-            model=model.model,
-            retain_loader=retain_loader,
-            forget_loader=forget_loader,
-            test_loader=test_loader,
-            logger=logger
-        )
-        logger.log_metrics(unlearn_metrics, step=0, prefix="unlearn/")
+            logger.print("\n[cyan]▶ Computing Unlearning Metrics[/cyan]")
+            metrics_calculator = MetricsCalculator(
+                device=config.get("device", "cuda"),
+                dataset_name=dataset_name
+            )
+            unlearn_metrics = metrics_calculator.compute_all_metrics(
+                model=model.model,
+                retain_loader=retain_loader,
+                forget_loader=forget_loader,
+                test_loader=test_loader,
+                logger=logger
+            )
+            logger.log_metrics(unlearn_metrics, step=0, prefix="unlearn/")
+        else:
+            logger.info(
+                "Skipping test-set evaluation during unlearn mode. "
+                "Use validation metrics for tuning, then run compare/final evaluation for reporting."
+            )
 
 
     # Retrain 모드

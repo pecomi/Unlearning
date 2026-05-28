@@ -52,6 +52,7 @@ unlearning:
 
 evaluation:
   batch_size: 128
+  use_test_during_unlearn: false
   metrics:
     - accuracy
     - forget_quality
