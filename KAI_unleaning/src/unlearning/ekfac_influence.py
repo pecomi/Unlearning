@@ -32,7 +32,6 @@ class _LayerState:
     ua: Optional[torch.Tensor] = None
     ub: Optional[torch.Tensor] = None
     weight_scaling: Optional[torch.Tensor] = None
-    bias_scaling: Optional[torch.Tensor] = None
 
 
 class EKFACInfluenceUnlearning(BaseUnlearning):
@@ -167,7 +166,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         self._states[module].activation = inputs[0].detach()
 
     def _save_grad_output(self, module, grad_input, grad_output) -> None:
-        self._states[module].grad_output = grad_output[0].detach()
+        self._states[module].grad_output = grad_output[0].detach() * grad_output[0].size(0)
 
     def _estimate_ekfac_curvature(self, dataloader, logger=None) -> dict:
         model = self.model.model
@@ -252,21 +251,17 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             for module, state in self._states.items():
                 if state.ua is None or state.ub is None:
                     continue
-                h_proj, delta_proj = self._project_saved_batch(state)
+                weight_scaling = self._compute_scaling(state)
                 key = state.name
-                weight_scaling = delta_proj.pow(2).t().matmul(h_proj.pow(2)) / h_proj.size(0)
-                bias_scaling = delta_proj.pow(2).mean(dim=0) if module.bias is not None else None
 
                 if key not in scaling_sums:
                     scaling_sums[key] = {
                         "weight": torch.zeros_like(weight_scaling),
-                        "bias": torch.zeros_like(bias_scaling) if bias_scaling is not None else None,
                         "count": 0,
                     }
-                scaling_sums[key]["weight"] += weight_scaling
-                if bias_scaling is not None:
-                    scaling_sums[key]["bias"] += bias_scaling
-                scaling_sums[key]["count"] += 1
+                batch_count = state.activation.size(0)
+                scaling_sums[key]["weight"] += weight_scaling * batch_count
+                scaling_sums[key]["count"] += batch_count
 
             batches_for_scaling += 1
 
@@ -275,8 +270,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             if scaling is None:
                 continue
             state.weight_scaling = scaling["weight"] / scaling["count"]
-            if scaling["bias"] is not None:
-                state.bias_scaling = scaling["bias"] / scaling["count"]
 
         self._diag_fisher = {name: value / total for name, value in diag_sums.items()}
         return {"batches": batches, "samples": total, "layers": len(scaling_sums)}
@@ -291,7 +284,30 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         h, delta = self._flatten_layer_io(state)
         return h.matmul(state.ua), delta.matmul(state.ub)
 
+    def _compute_scaling(self, state: _LayerState) -> torch.Tensor:
+        h, delta = self._layer_io_by_sample(state)
+        module = state.module
+
+        if isinstance(module, nn.Linear):
+            h_proj = h.matmul(state.ua)
+            delta_proj = delta.matmul(state.ub)
+            return delta_proj.pow(2).t().matmul(h_proj.pow(2)) / h_proj.size(0)
+
+        if isinstance(module, nn.Conv2d):
+            batch_size, num_locations, in_dim = h.shape
+            out_dim = delta.shape[-1]
+            h_proj = h.reshape(-1, in_dim).matmul(state.ua).view(batch_size, num_locations, -1)
+            delta_proj = delta.reshape(-1, out_dim).matmul(state.ub).view(batch_size, num_locations, -1)
+            per_sample_grad = torch.einsum("nlo,nli->noi", delta_proj, h_proj)
+            return per_sample_grad.pow(2).mean(dim=0)
+
+        raise TypeError(f"Unsupported EKFAC layer type: {type(module)}")
+
     def _flatten_layer_io(self, state: _LayerState):
+        h, delta = self._layer_io_by_sample(state)
+        return h.reshape(-1, h.shape[-1]), delta.reshape(-1, delta.shape[-1])
+
+    def _layer_io_by_sample(self, state: _LayerState):
         module = state.module
         activation = state.activation
         grad_output = state.grad_output
@@ -299,6 +315,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         if isinstance(module, nn.Linear):
             h = activation.reshape(-1, activation.shape[-1])
             delta = grad_output.reshape(-1, grad_output.shape[-1])
+            if module.bias is not None:
+                h = torch.cat([h, torch.ones_like(h[:, :1])], dim=1)
             return h, delta
 
         if isinstance(module, nn.Conv2d):
@@ -309,8 +327,10 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 padding=module.padding,
                 stride=module.stride,
             )
-            h = patches.transpose(1, 2).reshape(-1, patches.size(1))
-            delta = grad_output.permute(0, 2, 3, 1).reshape(-1, grad_output.size(1))
+            h = patches.transpose(1, 2)
+            if module.bias is not None:
+                h = torch.cat([h, torch.ones_like(h[:, :, :1])], dim=2)
+            delta = grad_output.flatten(2).transpose(1, 2)
             return h, delta
 
         raise TypeError(f"Unsupported EKFAC layer type: {type(module)}")
@@ -397,35 +417,59 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         return metrics
 
     def _apply_influence_update(self, forget_grads: Dict[str, torch.Tensor]) -> dict:
-        module_by_param = {}
-        for module, state in self._states.items():
-            for param_name, _ in module.named_parameters(recurse=False):
-                module_by_param[f"{state.name}.{param_name}"] = state
-
+        named_params = dict(self.model.model.named_parameters())
         updates = {}
         raw_update_norm_sq = 0.0
         nonfinite_update_tensors = 0
 
+        def add_update(param_name: str, param: torch.Tensor, update: torch.Tensor) -> None:
+            nonlocal raw_update_norm_sq, nonfinite_update_tensors
+
+            update = self.step_size * update
+            if not torch.isfinite(update).all():
+                nonfinite_update_tensors += 1
+                update = torch.nan_to_num(update, nan=0.0, posinf=0.0, neginf=0.0)
+
+            if self.layer_update_norm_ratio is not None:
+                param_norm = param.detach().norm().item()
+                layer_update_norm = update.norm().item()
+                layer_limit = self.layer_update_norm_ratio * param_norm
+                if layer_limit > 0.0 and layer_update_norm > layer_limit:
+                    update = update * (layer_limit / (layer_update_norm + 1e-12))
+
+            updates[param_name] = update
+            raw_update_norm_sq += update.pow(2).sum().item()
+
         with torch.no_grad():
-            for name, param in self.model.model.named_parameters():
-                if not param.requires_grad or name not in forget_grads:
+            handled_params = set()
+            for state in self._states.values():
+                weight_name = f"{state.name}.weight"
+                bias_name = f"{state.name}.bias"
+
+                if weight_name not in forget_grads or weight_name not in named_params:
                     continue
 
-                update = self._precondition_gradient(name, forget_grads[name], module_by_param.get(name))
-                update = self.step_size * update
-                if not torch.isfinite(update).all():
-                    nonfinite_update_tensors += 1
-                    update = torch.nan_to_num(update, nan=0.0, posinf=0.0, neginf=0.0)
+                weight_param = named_params[weight_name]
+                bias_param = named_params.get(bias_name)
+                bias_grad = forget_grads.get(bias_name) if bias_param is not None else None
+                weight_update, bias_update = self._precondition_module_gradient(
+                    state=state,
+                    weight_grad=forget_grads[weight_name],
+                    bias_grad=bias_grad,
+                )
 
-                if self.layer_update_norm_ratio is not None:
-                    param_norm = param.detach().norm().item()
-                    layer_update_norm = update.norm().item()
-                    layer_limit = self.layer_update_norm_ratio * param_norm
-                    if layer_limit > 0.0 and layer_update_norm > layer_limit:
-                        update = update * (layer_limit / (layer_update_norm + 1e-12))
+                add_update(weight_name, weight_param, weight_update)
+                handled_params.add(weight_name)
+                if bias_param is not None and bias_update is not None:
+                    add_update(bias_name, bias_param, bias_update)
+                    handled_params.add(bias_name)
 
-                updates[name] = update
-                raw_update_norm_sq += update.pow(2).sum().item()
+            for name, param in self.model.model.named_parameters():
+                if not param.requires_grad or name not in forget_grads or name in handled_params:
+                    continue
+
+                update = self._precondition_gradient(name, forget_grads[name])
+                add_update(name, param, update)
 
             raw_update_norm = raw_update_norm_sq ** 0.5
             clip_coef = 1.0
@@ -451,30 +495,36 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "nonfinite_update_tensors": nonfinite_update_tensors,
         }
 
+    def _precondition_module_gradient(
+        self,
+        state: _LayerState,
+        weight_grad: torch.Tensor,
+        bias_grad: Optional[torch.Tensor],
+    ) -> tuple:
+        if state.ua is None or state.ub is None or state.weight_scaling is None:
+            return weight_grad, bias_grad
+
+        matrix_grad = weight_grad.reshape(weight_grad.size(0), -1)
+        has_bias = bias_grad is not None
+        if has_bias:
+            matrix_grad = torch.cat([matrix_grad, bias_grad.reshape(-1, 1)], dim=1)
+
+        projected = state.ub.t().matmul(matrix_grad).matmul(state.ua)
+        projected = projected / (state.weight_scaling + self.damping)
+        preconditioned = state.ub.matmul(projected).matmul(state.ua.t())
+
+        if has_bias:
+            bias_update = preconditioned[:, -1].contiguous().view_as(bias_grad)
+            weight_update = preconditioned[:, :-1].contiguous().view_as(weight_grad)
+            return weight_update, bias_update
+
+        return preconditioned.contiguous().view_as(weight_grad), None
+
     def _precondition_gradient(
         self,
         name: str,
         grad: torch.Tensor,
-        state: Optional[_LayerState],
     ) -> torch.Tensor:
-        if state is None or state.ua is None or state.ub is None:
-            fisher = self._diag_fisher.get(name)
-            if fisher is None:
-                return grad
-            return grad / (fisher + self.damping)
-
-        if name.endswith(".weight") and state.weight_scaling is not None:
-            matrix_grad = grad.reshape(grad.size(0), -1)
-            projected = state.ub.t().matmul(matrix_grad).matmul(state.ua)
-            projected = projected / (state.weight_scaling + self.damping)
-            preconditioned = state.ub.matmul(projected).matmul(state.ua.t())
-            return preconditioned.reshape_as(grad)
-
-        if name.endswith(".bias") and state.bias_scaling is not None:
-            projected = state.ub.t().matmul(grad)
-            projected = projected / (state.bias_scaling + self.damping)
-            return state.ub.matmul(projected)
-
         fisher = self._diag_fisher.get(name)
         if fisher is None:
             return grad

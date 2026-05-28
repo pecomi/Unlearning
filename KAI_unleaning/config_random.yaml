@@ -20,7 +20,7 @@ data:
   split_strategy: random  # Random sample forgetting
   forget_labels: null
   forget_ratio: 0.1  # Forget 10% of training data
-  val_ratio: 0
+  val_ratio: 0.1
 
 # Model Configuration
 model:

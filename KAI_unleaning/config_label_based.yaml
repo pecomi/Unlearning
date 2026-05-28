@@ -20,7 +20,7 @@ data:
   split_strategy: label_based  # Single-class forgetting
   forget_labels: [4]  # Forget class 4 (deer)
   forget_ratio: 0.1  # Not used for label_based
-  val_ratio: 0
+  val_ratio: 0.1
 
 # Model Configuration
 model:

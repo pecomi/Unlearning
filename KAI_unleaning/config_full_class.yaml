@@ -20,7 +20,7 @@ data:
   split_strategy: all_labels  # Forget all classes
   forget_labels: null
   forget_ratio: 0.1
-  val_ratio: 0
+  val_ratio: 0.1
 
 # Model Configuration
 model:

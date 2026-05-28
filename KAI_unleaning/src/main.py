@@ -113,13 +113,18 @@ def main():
 
     train_loader = splits["train_loader"]
     forget_loader = splits["forget_loader"]
+    forget_val_loader = splits.get("forget_val_loader")
     retain_loader = splits["retain_loader"]
-    val_loader = splits["val_loader"] # validation set은 현재 사용하지 않아 코드는 사용치 않고, config에서 val_ratio를 0으로 명시함.
+    retain_val_loader = splits.get("retain_val_loader", splits["val_loader"])
+    val_loader = splits["val_loader"]
     test_loader = splits["test_loader"]
 
     logger.info(f"  Train samples: {len(train_loader.dataset)}")
     logger.info(f"  Forget samples: {len(forget_loader.dataset)}")
+    if forget_val_loader is not None:
+        logger.info(f"  Forget val samples: {len(forget_val_loader.dataset)}")
     logger.info(f"  Retain samples: {len(retain_loader.dataset)}")
+    logger.info(f"  Retain val samples: {len(retain_val_loader.dataset)}")
     logger.info(f"  Test samples: {len(test_loader.dataset)}")
 
 
@@ -264,10 +269,8 @@ def main():
             forget_loader=fisher_forget_loader,
             train_loader=fisher_train_loader,
             eval_loaders={
-                "retain": retain_loader,
-                "forget": forget_loader,
-                "val": val_loader,
-                "test": test_loader,
+                "retain_val": retain_val_loader,
+                "forget_val": forget_val_loader,
             },
             logger=logger
         )

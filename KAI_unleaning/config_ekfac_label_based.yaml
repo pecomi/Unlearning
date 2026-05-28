@@ -17,7 +17,7 @@ data:
   split_strategy: label_based
   forget_labels: [4]
   forget_ratio: 0.1
-  val_ratio: 0
+  val_ratio: 0.1
 
 model:
   name: resnet18
@@ -38,12 +38,12 @@ training:
 
 unlearning:
   name: ekfac_influence
-  fisher_batch_size: 8
-  step_size: 0.001
+  fisher_batch_size: 128
+  step_size: 0.005
   damping: 0.1
   update_norm_clip: 5.0
   layer_update_norm_ratio: null
-  num_unlearn_steps: 5
+  num_unlearn_steps: 1  # Reference-aligned one-step EKFAC influence update
   recompute_curvature_each_step: false
   unlearn_eval_interval: 1
   max_eval_batches: 20

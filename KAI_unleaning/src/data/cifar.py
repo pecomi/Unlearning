@@ -9,6 +9,19 @@ CIFAR_MEAN = (0.5070751592371323, 0.48654887331495095, 0.4409178433670343)
 CIFAR_STD = (0.2673342858792401, 0.2564384629170883, 0.27615047132568404)
 
 
+def _split_train_val(indices, val_ratio: float, generator: torch.Generator):
+    """Split a list of indices into train and validation subsets."""
+    if len(indices) == 0:
+        return [], []
+
+    shuffled = torch.tensor(indices)
+    shuffled = shuffled[torch.randperm(len(shuffled), generator=generator)].tolist()
+    val_size = min(int(len(shuffled) * val_ratio), len(shuffled))
+    val_indices = shuffled[:val_size]
+    train_indices = shuffled[val_size:]
+    return train_indices, val_indices
+
+
 class CIFAR10Dataset(BaseDataset):
 
     name = "cifar10"
@@ -42,6 +55,13 @@ class CIFAR10Dataset(BaseDataset):
             transform=transform_train
         )
 
+        self.eval_train_dataset = torchvision.datasets.CIFAR10(
+            root=self.root,
+            train=True,
+            download=False,
+            transform=transform_test
+        )
+
         self.test_dataset = torchvision.datasets.CIFAR10(
             root=self.root,
             train=False,
@@ -55,6 +75,7 @@ class CIFAR10Dataset(BaseDataset):
                      forget_labels: list = None) -> dict:
         torch.manual_seed(seed)
         total_samples = len(self.train_dataset)
+        g = torch.Generator().manual_seed(seed)
 
         if split_strategy == "label_based":
             if forget_labels is None:
@@ -89,48 +110,44 @@ class CIFAR10Dataset(BaseDataset):
             print(f"  Forget set size: {len(forget_indices)}")
             print(f"  Retain set size (before val split): {len(retain_indices)}")
 
-            # Sample validation set from retain set
-            val_size = min(int(len(retain_indices) * val_ratio), len(retain_indices))
-            retain_indices = torch.tensor(retain_indices)
-            retain_indices = retain_indices[torch.randperm(len(retain_indices))].tolist()
-            val_indices = retain_indices[:val_size]
-            retain_indices = retain_indices[val_size:]
+            forget_indices, forget_val_indices = _split_train_val(forget_indices, val_ratio, g)
+            retain_indices, retain_val_indices = _split_train_val(retain_indices, val_ratio, g)
 
-            print(f"  Val set size: {len(val_indices)}")
+            print(f"  Forget val set size: {len(forget_val_indices)}")
+            print(f"  Retain val set size: {len(retain_val_indices)}")
             print(f"  Retain set size (after val split): {len(retain_indices)}")
 
         elif split_strategy == "all_labels":
-            # Per-class: forget_ratio for forget, then val_ratio of remainder for val
+            # Per-class: forget_ratio for forget, then val_ratio from both forget and retain pools.
             targets = torch.tensor(self.train_dataset.targets)
-            g = torch.Generator().manual_seed(seed)
 
-            forget_indices, val_indices, retain_indices = [], [], []
+            forget_indices, forget_val_indices, retain_indices, retain_val_indices = [], [], [], []
             for cls in range(self.num_classes):
                 cls_idx = torch.where(targets == cls)[0]
                 cls_idx = cls_idx[torch.randperm(len(cls_idx), generator=g)].tolist()
                 n_forget = int(len(cls_idx) * forget_ratio)
-                n_val = int((len(cls_idx) - n_forget) * val_ratio)
-                forget_indices.extend(cls_idx[:n_forget])
-                val_indices.extend(cls_idx[n_forget:n_forget + n_val])
-                retain_indices.extend(cls_idx[n_forget + n_val:])
+                cls_forget, cls_forget_val = _split_train_val(cls_idx[:n_forget], val_ratio, g)
+                cls_retain, cls_retain_val = _split_train_val(cls_idx[n_forget:], val_ratio, g)
+                forget_indices.extend(cls_forget)
+                forget_val_indices.extend(cls_forget_val)
+                retain_indices.extend(cls_retain)
+                retain_val_indices.extend(cls_retain_val)
 
         else:  # Default: random strategy
             # Calculate split sizes
             forget_size = int(total_samples * forget_ratio)
-            val_size = int(total_samples * val_ratio)
-            retain_size = total_samples - forget_size - val_size
 
             # Create indices
-            indices = torch.randperm(total_samples).tolist()
+            indices = torch.randperm(total_samples, generator=g).tolist()
 
-            forget_indices = indices[:forget_size]
-            val_indices = indices[forget_size:forget_size + val_size]
-            retain_indices = indices[forget_size + val_size:]
+            forget_indices, forget_val_indices = _split_train_val(indices[:forget_size], val_ratio, g)
+            retain_indices, retain_val_indices = _split_train_val(indices[forget_size:], val_ratio, g)
 
         # Create subsets
         forget_set = Subset(self.train_dataset, forget_indices)
-        val_set = Subset(self.train_dataset, val_indices)
+        forget_val_set = Subset(self.eval_train_dataset, forget_val_indices)
         retain_set = Subset(self.train_dataset, retain_indices)
+        retain_val_set = Subset(self.eval_train_dataset, retain_val_indices)
 
         train_indices = forget_indices + retain_indices
         full_train_set = Subset(self.train_dataset, train_indices)
@@ -139,8 +156,10 @@ class CIFAR10Dataset(BaseDataset):
         return {
             "train_loader": self._create_dataloader(full_train_set, batch_size, True, num_workers, pin_memory=pin_memory),
             "forget_loader": self._create_dataloader(forget_set, batch_size, False, num_workers, pin_memory=pin_memory),
+            "forget_val_loader": self._create_dataloader(forget_val_set, batch_size, False, num_workers, pin_memory=pin_memory),
             "retain_loader": self._create_dataloader(retain_set, batch_size, True, num_workers, pin_memory=pin_memory),
-            "val_loader": self._create_dataloader(val_set, batch_size, False, num_workers, pin_memory=pin_memory),
+            "retain_val_loader": self._create_dataloader(retain_val_set, batch_size, False, num_workers, pin_memory=pin_memory),
+            "val_loader": self._create_dataloader(retain_val_set, batch_size, False, num_workers, pin_memory=pin_memory),
             "test_loader": self._create_dataloader(self.test_dataset, batch_size, False, num_workers, pin_memory=pin_memory),
         }
 
@@ -167,6 +186,13 @@ class CIFAR100Dataset(BaseDataset):
             transform=transform
         )
 
+        self.eval_train_dataset = torchvision.datasets.CIFAR100(
+            root=self.root,
+            train=True,
+            download=False,
+            transform=transform
+        )
+
         self.test_dataset = torchvision.datasets.CIFAR100(
             root=self.root,
             train=False,
@@ -181,6 +207,7 @@ class CIFAR100Dataset(BaseDataset):
         
         torch.manual_seed(seed)
         total_samples = len(self.train_dataset)
+        g = torch.Generator().manual_seed(seed)
 
         if split_strategy == "label_based":
             if forget_labels is None:
@@ -203,44 +230,39 @@ class CIFAR100Dataset(BaseDataset):
             forget_indices = torch.where(forget_mask)[0].tolist()
             retain_indices = torch.where(retain_mask)[0].tolist()
 
-            # Sample validation set from retain set
-            val_size = min(int(len(retain_indices) * val_ratio), len(retain_indices))
-            retain_indices = torch.tensor(retain_indices)
-            retain_indices = retain_indices[torch.randperm(len(retain_indices))].tolist()
-            val_indices = retain_indices[:val_size]
-            retain_indices = retain_indices[val_size:]
+            forget_indices, forget_val_indices = _split_train_val(forget_indices, val_ratio, g)
+            retain_indices, retain_val_indices = _split_train_val(retain_indices, val_ratio, g)
 
         elif split_strategy == "all_labels":
-            # Per-class: forget_ratio for forget, then val_ratio of remainder for val
+            # Per-class: forget_ratio for forget, then val_ratio from both forget and retain pools.
             targets = torch.tensor(self.train_dataset.targets)
-            g = torch.Generator().manual_seed(seed)
 
-            forget_indices, val_indices, retain_indices = [], [], []
+            forget_indices, forget_val_indices, retain_indices, retain_val_indices = [], [], [], []
             for cls in range(self.num_classes):
                 cls_idx = torch.where(targets == cls)[0]
                 cls_idx = cls_idx[torch.randperm(len(cls_idx), generator=g)].tolist()
                 n_forget = int(len(cls_idx) * forget_ratio)
-                n_val = int((len(cls_idx) - n_forget) * val_ratio)
-                forget_indices.extend(cls_idx[:n_forget])
-                val_indices.extend(cls_idx[n_forget:n_forget + n_val])
-                retain_indices.extend(cls_idx[n_forget + n_val:])
+                cls_forget, cls_forget_val = _split_train_val(cls_idx[:n_forget], val_ratio, g)
+                cls_retain, cls_retain_val = _split_train_val(cls_idx[n_forget:], val_ratio, g)
+                forget_indices.extend(cls_forget)
+                forget_val_indices.extend(cls_forget_val)
+                retain_indices.extend(cls_retain)
+                retain_val_indices.extend(cls_retain_val)
 
         else:  # Default: random strategy
             # Calculate split sizes
             forget_size = int(total_samples * forget_ratio)
-            val_size = int(total_samples * val_ratio)
-            retain_size = total_samples - forget_size - val_size
 
-            indices = torch.randperm(total_samples).tolist()
+            indices = torch.randperm(total_samples, generator=g).tolist()
 
-            forget_indices = indices[:forget_size]
-            val_indices = indices[forget_size:forget_size + val_size]
-            retain_indices = indices[forget_size + val_size:]
+            forget_indices, forget_val_indices = _split_train_val(indices[:forget_size], val_ratio, g)
+            retain_indices, retain_val_indices = _split_train_val(indices[forget_size:], val_ratio, g)
 
         # Create subsets
         forget_set = Subset(self.train_dataset, forget_indices)
-        val_set = Subset(self.train_dataset, val_indices)
+        forget_val_set = Subset(self.eval_train_dataset, forget_val_indices)
         retain_set = Subset(self.train_dataset, retain_indices)
+        retain_val_set = Subset(self.eval_train_dataset, retain_val_indices)
         
         train_indices = forget_indices + retain_indices
         full_train_set = Subset(self.train_dataset, train_indices)
@@ -248,7 +270,9 @@ class CIFAR100Dataset(BaseDataset):
         return {
             "train_loader": self._create_dataloader(full_train_set, batch_size, True, num_workers, pin_memory=pin_memory),
             "forget_loader": self._create_dataloader(forget_set, batch_size, False, num_workers, pin_memory=pin_memory),
+            "forget_val_loader": self._create_dataloader(forget_val_set, batch_size, False, num_workers, pin_memory=pin_memory),
             "retain_loader": self._create_dataloader(retain_set, batch_size, True, num_workers, pin_memory=pin_memory),
-            "val_loader": self._create_dataloader(val_set, batch_size, False, num_workers, pin_memory=pin_memory),
+            "retain_val_loader": self._create_dataloader(retain_val_set, batch_size, False, num_workers, pin_memory=pin_memory),
+            "val_loader": self._create_dataloader(retain_val_set, batch_size, False, num_workers, pin_memory=pin_memory),
             "test_loader": self._create_dataloader(self.test_dataset, batch_size, False, num_workers, pin_memory=pin_memory),
         }
