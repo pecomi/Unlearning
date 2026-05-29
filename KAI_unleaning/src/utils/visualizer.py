@@ -87,13 +87,16 @@ class UnlearningVisualizer:
         retrained_metrics: Dict[str, float],
         title: str = "Unlearned vs Retrained (Gold Standard)"
     ) -> Figure:
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-
         metrics_to_compare = [
             ("retain_accuracy", "Retain Accuracy"),
             ("forget_accuracy", "Forget Accuracy"),
-            ("test_accuracy", "Test Accuracy")
         ]
+        if "test_accuracy" in unlearned_metrics and "test_accuracy" in retrained_metrics:
+            metrics_to_compare.append(("test_accuracy", "Test Accuracy"))
+
+        fig, axes = plt.subplots(1, len(metrics_to_compare), figsize=(5 * len(metrics_to_compare), 5))
+        if len(metrics_to_compare) == 1:
+            axes = [axes]
 
         for idx, (metric_key, metric_name) in enumerate(metrics_to_compare):
             ax = axes[idx]
@@ -123,6 +126,67 @@ class UnlearningVisualizer:
             ax.set_title(metric_name, fontsize=12, fontweight="bold")
             ax.set_ylim(0, 1.0)
             ax.grid(axis="y", alpha=0.3)
+
+        plt.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
+        plt.tight_layout()
+
+        return fig
+
+    def create_validation_comparison_plot(
+        self,
+        unlearned_metrics: Dict[str, float],
+        retrained_metrics: Dict[str, float],
+        title: str = "Validation Comparison with Gold Standard"
+    ) -> Figure:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+        metric_groups = [
+            (
+                axes[0],
+                [("retain_val_accuracy", "Retain Val"), ("forget_val_accuracy", "Forget Val")],
+                "Accuracy",
+                (0, 1.0),
+            ),
+            (
+                axes[1],
+                [("retain_val_loss", "Retain Val"), ("forget_val_loss", "Forget Val")],
+                "Loss",
+                None,
+            ),
+        ]
+
+        for ax, metrics_to_compare, ylabel, ylim in metric_groups:
+            labels = [label for _, label in metrics_to_compare]
+            x = np.arange(len(labels))
+            width = 0.35
+
+            unlearned_values = [unlearned_metrics.get(metric_key, 0) for metric_key, _ in metrics_to_compare]
+            retrained_values = [retrained_metrics.get(metric_key, 0) for metric_key, _ in metrics_to_compare]
+
+            bars1 = ax.bar(x - width / 2, unlearned_values, width, label="Unlearned", color="#3498db", alpha=0.75)
+            bars2 = ax.bar(x + width / 2, retrained_values, width, label="Retrained", color="#f39c12", alpha=0.75)
+
+            for bars in [bars1, bars2]:
+                for bar in bars:
+                    height = bar.get_height()
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2.0,
+                        height,
+                        f"{height:.3f}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=10,
+                        fontweight="bold"
+                    )
+
+            ax.set_xticks(x)
+            ax.set_xticklabels(labels)
+            ax.set_ylabel(ylabel, fontsize=11, fontweight="bold")
+            ax.set_title(f"Validation {ylabel}", fontsize=12, fontweight="bold")
+            if ylim is not None:
+                ax.set_ylim(*ylim)
+            ax.grid(axis="y", alpha=0.3)
+            ax.legend()
 
         plt.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
         plt.tight_layout()

@@ -93,10 +93,14 @@ class Trainer:
             # Learning rate scheduling
             scheduler.step()
 
+            val_loss, val_acc = self._validate(val_loader, criterion)
+
             # Log metrics
             metrics = {
                 "train_loss": train_loss,
                 "train_accuracy": train_acc,
+                "val_loss": val_loss,
+                "val_accuracy": val_acc,
                 "learning_rate": optimizer.param_groups[0]["lr"],
             }
             self.logger.log_metrics(metrics, step=epoch, prefix="train/")

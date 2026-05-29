@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader
 
 from data.factory import DatasetFactory
 from metrics.calculator import MetricsCalculator
@@ -250,29 +250,65 @@ def main():
             device=config.get("device", "cuda")
         )
 
+        unlearn_train_dataset = train_loader.dataset
+        unlearn_forget_dataset = forget_loader.dataset
+        use_full_split_for_unlearn = config.get("evaluation.train_unlearn_on_full_split", False)
+        if use_full_split_for_unlearn:
+            val_datasets = []
+            if retain_val_loader is not None and len(retain_val_loader.dataset) > 0:
+                val_datasets.append(retain_val_loader.dataset)
+            if forget_val_loader is not None and len(forget_val_loader.dataset) > 0:
+                val_datasets.append(forget_val_loader.dataset)
+
+            if val_datasets:
+                unlearn_train_dataset = ConcatDataset([train_loader.dataset, *val_datasets])
+                logger.info(
+                    f"Using train + validation split for EKFAC curvature: "
+                    f"{len(unlearn_train_dataset)} samples"
+                )
+
+            if forget_val_loader is not None and len(forget_val_loader.dataset) > 0:
+                unlearn_forget_dataset = ConcatDataset([
+                    forget_loader.dataset,
+                    forget_val_loader.dataset,
+                ])
+                logger.info(
+                    f"Using forget train + forget validation for forget gradient: "
+                    f"{len(unlearn_forget_dataset)} samples"
+                )
+
         # batch를 위한 DataLoader 생성
         fisher_train_loader = DataLoader(
-            train_loader.dataset,
+            unlearn_train_dataset,
             batch_size=fisher_batch_size,
             shuffle=False,
             num_workers=config.get("num_workers", 4),
             pin_memory=use_pin_memory,
         )
         fisher_forget_loader = DataLoader(
-            forget_loader.dataset,
+            unlearn_forget_dataset,
             batch_size=fisher_batch_size,
             shuffle=False,
             num_workers=config.get("num_workers", 4),
             pin_memory=use_pin_memory,
         )
 
+        unlearn_eval_loaders = {}
+        if use_full_split_for_unlearn:
+            logger.info(
+                "Skipping validation-set monitoring during unlearn because validation "
+                "data is included in the final unlearning data."
+            )
+        else:
+            unlearn_eval_loaders = {
+                "retain_val": retain_val_loader,
+                "forget_val": forget_val_loader,
+            }
+
         result = unlearning.unlearn(
             forget_loader=fisher_forget_loader,
             train_loader=fisher_train_loader,
-            eval_loaders={
-                "retain_val": retain_val_loader,
-                "forget_val": forget_val_loader,
-            },
+            eval_loaders=unlearn_eval_loaders,
             logger=logger
         )
 
@@ -331,9 +367,24 @@ def main():
 
         training_config = config.get("training", {})
 
+        retrain_train_loader = retain_loader
+        if config.get("evaluation.train_retrain_on_full_retain", False):
+            retrain_dataset = ConcatDataset([retain_loader.dataset, retain_val_loader.dataset])
+            retrain_train_loader = DataLoader(
+                retrain_dataset,
+                batch_size=config.get("training.batch_size", 128),
+                shuffle=True,
+                num_workers=config.get("num_workers", 4),
+                pin_memory=use_pin_memory,
+            )
+            logger.info(
+                f"Training retrained model on retain train + retain val: "
+                f"{len(retrain_train_loader.dataset)} samples"
+            )
+
         # retrain 실행
         retrained_model.model = retrain_trainer.train(
-            train_loader=retain_loader,
+            train_loader=retrain_train_loader,
             val_loader=val_loader,
             epochs=training_config.get("epochs", 100),
             optimizer_config=training_config.get("optimizer", {}),
@@ -345,14 +396,52 @@ def main():
         retrain_trainer.save_model(str(checkpoint_path))
         logger.success(f"Saved retrained model to: {checkpoint_path}")
 
-        # Test set 평가
-        logger.print("\n[cyan]▶ Evaluating Retrained Model on Test Set[/cyan]")
-        test_loss, test_acc = retrain_trainer.evaluate(test_loader)
+        logger.print("\n[cyan]▶ Evaluating Retrained Model on Validation Sets[/cyan]")
+        metrics_calculator = MetricsCalculator(
+            device=config.get("device", "cuda"),
+            dataset_name=dataset_name
+        )
+        retrain_val_metrics = {}
 
-        logger.log_metrics({
-            "test_accuracy": test_acc,
-            "test_loss": test_loss
-        }, step=training_config.get("epochs", 100), prefix="retrain/")
+        retain_val_metrics = metrics_calculator.compute_classification_metrics(
+            retrained_model.model,
+            retain_val_loader
+        )
+        retrain_val_metrics.update({
+            f"retain_val_{key}": value
+            for key, value in retain_val_metrics.items()
+        })
+
+        if forget_val_loader is not None and len(forget_val_loader.dataset) > 0:
+            forget_val_metrics = metrics_calculator.compute_classification_metrics(
+                retrained_model.model,
+                forget_val_loader
+            )
+            retrain_val_metrics.update({
+                f"forget_val_{key}": value
+                for key, value in forget_val_metrics.items()
+            })
+
+        logger.log_metrics(
+            retrain_val_metrics,
+            step=training_config.get("epochs", 100),
+            prefix="retrain_val/"
+        )
+
+        if config.get("evaluation.use_test_during_retrain", False):
+            # Keep test-set evaluation out of tuning by default.
+            logger.print("\n[cyan]▶ Evaluating Retrained Model on Test Set[/cyan]")
+            test_loss, test_acc = retrain_trainer.evaluate(test_loader)
+
+            logger.log_metrics({
+                "test_accuracy": test_acc,
+                "test_loss": test_loss
+            }, step=training_config.get("epochs", 100), prefix="retrain/")
+        else:
+            logger.info(
+                "Skipping test-set evaluation during retrain mode. "
+                "Use validation metrics for tuning, then run compare/final evaluation for reporting."
+            )
 
         retrain_trainer.finish()
 
@@ -396,12 +485,22 @@ def main():
             dataset_name=dataset_name
         )
 
+        use_test_during_compare = config.get("evaluation.use_test_during_compare", False)
+        compare_test_loader = test_loader if use_test_during_compare else None
+        if not use_test_during_compare:
+            logger.info(
+                "Skipping test-set evaluation during compare mode. "
+                "Set evaluation.use_test_during_compare=true for final reporting."
+            )
+
         all_metrics = metrics_calculator.compare_with_gold_standard(
             unlearned_model=model.model,
             retrained_model=retrained_model.model,
             retain_loader=retain_loader,
             forget_loader=forget_loader,
-            test_loader=test_loader,
+            test_loader=compare_test_loader,
+            retain_val_loader=retain_val_loader,
+            forget_val_loader=forget_val_loader,
             logger=logger
         )
 

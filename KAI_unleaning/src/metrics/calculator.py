@@ -159,7 +159,7 @@ class MetricsCalculator:
             "entropy": avg_entropy,
         }
 
-    def compute_model_utility(self, model, retain_loader, test_loader,
+    def compute_model_utility(self, model, retain_loader, test_loader=None,
                              forget_loader=None) -> Dict[str, float]:
         """
         Compute Model Utility metrics.
@@ -169,30 +169,30 @@ class MetricsCalculator:
         Args:
             model: PyTorch model
             retain_loader: DataLoader for retain set
-            test_loader: DataLoader for test set
+            test_loader: Optional DataLoader for test set
             forget_loader: Optional DataLoader for forget set comparison
 
         Returns:
             Dictionary containing utility metrics
         """
-        # Metrics on retain set
         retain_metrics = self.compute_classification_metrics(model, retain_loader)
-
-        # Metrics on test set
-        test_metrics = self.compute_classification_metrics(model, test_loader)
-
-        # Compute truth ratio on retain set
         truth_ratio = self._compute_truth_ratio(model, retain_loader)
 
-        return {
+        metrics = {
             "retain_accuracy": retain_metrics["accuracy"],
             "retain_loss": retain_metrics["loss"],
             "retain_confidence": retain_metrics["confidence"],
-            "test_accuracy": test_metrics["accuracy"],
-            "test_loss": test_metrics["loss"],
-            "test_confidence": test_metrics["confidence"],
             "truth_ratio_retain": truth_ratio,
         }
+        if test_loader is not None:
+            test_metrics = self.compute_classification_metrics(model, test_loader)
+            metrics.update({
+                "test_accuracy": test_metrics["accuracy"],
+                "test_loss": test_metrics["loss"],
+                "test_confidence": test_metrics["confidence"],
+            })
+
+        return metrics
 
     def compute_forget_quality(self, model, forget_loader) -> Dict[str, float]:
         """
@@ -286,7 +286,7 @@ class MetricsCalculator:
         return truth_ratio
 
     def compute_all_metrics(self, model, retain_loader, forget_loader,
-                           test_loader, logger=None) -> Dict[str, float]:
+                           test_loader=None, logger=None) -> Dict[str, float]:
         """
         Compute all evaluation metrics.
 
@@ -294,7 +294,7 @@ class MetricsCalculator:
             model: PyTorch model
             retain_loader: DataLoader for retain set
             forget_loader: DataLoader for forget set
-            test_loader: DataLoader for test set
+            test_loader: Optional DataLoader for test set
             logger: Optional logger instance
 
         Returns:
@@ -312,25 +312,23 @@ class MetricsCalculator:
 
         forget_metrics = self.compute_forget_quality(model, forget_loader)
 
-        num_classes = model.num_classes if hasattr(model, "num_classes") else 10
-        per_class_acc = self.compute_per_class_accuracy(model, test_loader, num_classes)
         class_names = self.visualizer.class_names if self.visualizer else None
         per_class_metrics = {}
-        for c, acc in per_class_acc.items():
-            label = class_names[c] if class_names and c < len(class_names) else str(c)
-            per_class_metrics[f"test_acc_class_{c}_{label}"] = acc
+        per_class_acc = {}
+        if test_loader is not None:
+            num_classes = model.num_classes if hasattr(model, "num_classes") else 10
+            per_class_acc = self.compute_per_class_accuracy(model, test_loader, num_classes)
+            for c, acc in per_class_acc.items():
+                label = class_names[c] if class_names and c < len(class_names) else str(c)
+                per_class_metrics[f"test_acc_class_{c}_{label}"] = acc
 
-        # Combine all metrics
         all_metrics = {**utility_metrics, **forget_metrics, **per_class_metrics}
 
-        # Create visualizations
         if self.visualizer:
-            # Accuracy comparison plot
             fig = self.visualizer.create_accuracy_comparison_plot(all_metrics)
             self.visualizer.log_figure_to_wandb(fig, "evaluation/accuracy_comparison")
             self.visualizer.close_all_figures()
 
-            # Forget quality plot
             num_classes = model.num_classes if hasattr(model, "num_classes") else 10
             fig = self.visualizer.create_forget_quality_plot(
                 all_metrics["forget_accuracy"],
@@ -339,36 +337,36 @@ class MetricsCalculator:
             self.visualizer.log_figure_to_wandb(fig, "evaluation/forget_quality")
             self.visualizer.close_all_figures()
 
-            # Per-class accuracy on test set
-            fig = self.visualizer.create_per_class_accuracy_plot(
-                model, test_loader, self.device, title="Test Set Per-Class Accuracy"
-            )
-            self.visualizer.log_figure_to_wandb(fig, "evaluation/test_per_class_accuracy")
-            self.visualizer.close_all_figures()
+            if test_loader is not None:
+                fig = self.visualizer.create_per_class_accuracy_plot(
+                    model, test_loader, self.device, title="Test Set Per-Class Accuracy"
+                )
+                self.visualizer.log_figure_to_wandb(fig, "evaluation/test_per_class_accuracy")
+                self.visualizer.close_all_figures()
 
-            # Confusion matrix on test set
-            fig = self.visualizer.create_confusion_matrix_plot(
-                model, test_loader, self.device, title="Test Set Confusion Matrix"
-            )
-            self.visualizer.log_figure_to_wandb(fig, "evaluation/test_confusion_matrix")
-            self.visualizer.close_all_figures()
+                fig = self.visualizer.create_confusion_matrix_plot(
+                    model, test_loader, self.device, title="Test Set Confusion Matrix"
+                )
+                self.visualizer.log_figure_to_wandb(fig, "evaluation/test_confusion_matrix")
+                self.visualizer.close_all_figures()
 
-        # Log summary
         if logger:
             logger.print("\n[bold]=== Evaluation Summary ===[/bold]")
             logger.print(f"[green]Model Utility:[/green]")
             logger.print(f"  Retain Accuracy: {all_metrics['retain_accuracy']:.4f}")
-            logger.print(f"  Test Accuracy:   {all_metrics['test_accuracy']:.4f}")
+            if "test_accuracy" in all_metrics:
+                logger.print(f"  Test Accuracy:   {all_metrics['test_accuracy']:.4f}")
             logger.print(f"  Truth Ratio:     {all_metrics['truth_ratio_retain']:.4f}")
             logger.print(f"[red]Forget Quality:[/red]")
             logger.print(f"  Forget Accuracy: {all_metrics['forget_accuracy']:.4f}")
             logger.print(f"  Forget Score:   {all_metrics['forget_score']:.4f}")
             logger.print(f"  Truth Ratio:    {all_metrics['truth_ratio_forget']:.4f}")
-            logger.print(f"[cyan]Per-Class Test Accuracy:[/cyan]")
-            for c, acc in per_class_acc.items():
-                label = class_names[c] if class_names and c < len(class_names) else str(c)
-                acc_str = f"{acc:.4f}" if acc == acc else "n/a"  # NaN check
-                logger.print(f"  class {c:>2} ({label}): {acc_str}")
+            if per_class_acc:
+                logger.print(f"[cyan]Per-Class Test Accuracy:[/cyan]")
+                for c, acc in per_class_acc.items():
+                    label = class_names[c] if class_names and c < len(class_names) else str(c)
+                    acc_str = f"{acc:.4f}" if acc == acc else "n/a"
+                    logger.print(f"  class {c:>2} ({label}): {acc_str}")
 
         return all_metrics
 
@@ -484,7 +482,9 @@ class MetricsCalculator:
         retrained_model,
         retain_loader,
         forget_loader,
-        test_loader,
+        test_loader=None,
+        retain_val_loader=None,
+        forget_val_loader=None,
         logger=None
     ) -> Dict[str, float]:
         """
@@ -495,7 +495,9 @@ class MetricsCalculator:
             retrained_model: Model trained from scratch on retain data
             retain_loader: DataLoader for retain set
             forget_loader: DataLoader for forget set
-            test_loader: DataLoader for test set
+            test_loader: Optional DataLoader for test set
+            retain_val_loader: Optional DataLoader for retain validation set
+            forget_val_loader: Optional DataLoader for forget validation set
             logger: Optional logger instance
 
         Returns:
@@ -522,20 +524,56 @@ class MetricsCalculator:
             unlearned_model, retrained_model, test_loader
         )
 
+        unlearned_val_metrics = {}
+        retrained_val_metrics = {}
+        val_gap_metrics = {}
+        validation_loaders = {
+            "retain_val": retain_val_loader,
+            "forget_val": forget_val_loader,
+        }
+
+        for loader_name, dataloader in validation_loaders.items():
+            if dataloader is None or len(dataloader.dataset) == 0:
+                continue
+
+            if logger:
+                logger.info(f"[cyan]Evaluating {loader_name} against Gold Standard...[/cyan]")
+
+            unlearned_eval = self.compute_classification_metrics(unlearned_model, dataloader)
+            retrained_eval = self.compute_classification_metrics(retrained_model, dataloader)
+
+            for metric_name, value in unlearned_eval.items():
+                unlearned_val_metrics[f"{loader_name}_{metric_name}"] = value
+            for metric_name, value in retrained_eval.items():
+                retrained_val_metrics[f"{loader_name}_{metric_name}"] = value
+
+            val_gap_metrics[f"{loader_name}_accuracy_gap"] = abs(
+                unlearned_eval["accuracy"] - retrained_eval["accuracy"]
+            )
+            val_gap_metrics[f"{loader_name}_loss_gap"] = abs(
+                unlearned_eval["loss"] - retrained_eval["loss"]
+            )
+
         # Compute accuracy gaps
         retain_acc_gap = abs(unlearned_metrics["retain_accuracy"] - retrained_metrics["retain_accuracy"])
         forget_acc_gap = abs(unlearned_metrics["forget_accuracy"] - retrained_metrics["forget_accuracy"])
-        test_acc_gap = abs(unlearned_metrics["test_accuracy"] - retrained_metrics["test_accuracy"])
+        test_acc_gap = None
+        if "test_accuracy" in unlearned_metrics and "test_accuracy" in retrained_metrics:
+            test_acc_gap = abs(unlearned_metrics["test_accuracy"] - retrained_metrics["test_accuracy"])
 
         # Combine all metrics
         all_metrics = {
             **{f"unlearned_{k}": v for k, v in unlearned_metrics.items()},
             **{f"retrained_{k}": v for k, v in retrained_metrics.items()},
+            **{f"unlearned_{k}": v for k, v in unlearned_val_metrics.items()},
+            **{f"retrained_{k}": v for k, v in retrained_val_metrics.items()},
             **distance_metrics,
             "retain_accuracy_gap": retain_acc_gap,
             "forget_accuracy_gap": forget_acc_gap,
-            "test_accuracy_gap": test_acc_gap,
+            **val_gap_metrics,
         }
+        if test_acc_gap is not None:
+            all_metrics["test_accuracy_gap"] = test_acc_gap
 
         # Create visualizations
         if self.visualizer:
@@ -551,20 +589,29 @@ class MetricsCalculator:
             self.visualizer.log_figure_to_wandb(fig, "comparison/model_distance")
             self.visualizer.close_all_figures()
 
-            # Per-class accuracy comparison for both models
-            fig = self.visualizer.create_per_class_accuracy_plot(
-                unlearned_model, test_loader, self.device,
-                title="Unlearned Model - Per-Class Accuracy"
-            )
-            self.visualizer.log_figure_to_wandb(fig, "comparison/unlearned_per_class_accuracy")
-            self.visualizer.close_all_figures()
+            if unlearned_val_metrics and retrained_val_metrics:
+                fig = self.visualizer.create_validation_comparison_plot(
+                    unlearned_val_metrics,
+                    retrained_val_metrics
+                )
+                self.visualizer.log_figure_to_wandb(fig, "comparison/validation_model_comparison")
+                self.visualizer.close_all_figures()
 
-            fig = self.visualizer.create_per_class_accuracy_plot(
-                retrained_model, test_loader, self.device,
-                title="Retrained Model (Gold Standard) - Per-Class Accuracy"
-            )
-            self.visualizer.log_figure_to_wandb(fig, "comparison/retrained_per_class_accuracy")
-            self.visualizer.close_all_figures()
+            if test_loader is not None:
+                # Per-class accuracy comparison for both models
+                fig = self.visualizer.create_per_class_accuracy_plot(
+                    unlearned_model, test_loader, self.device,
+                    title="Unlearned Model - Per-Class Accuracy"
+                )
+                self.visualizer.log_figure_to_wandb(fig, "comparison/unlearned_per_class_accuracy")
+                self.visualizer.close_all_figures()
+
+                fig = self.visualizer.create_per_class_accuracy_plot(
+                    retrained_model, test_loader, self.device,
+                    title="Retrained Model (Gold Standard) - Per-Class Accuracy"
+                )
+                self.visualizer.log_figure_to_wandb(fig, "comparison/retrained_per_class_accuracy")
+                self.visualizer.close_all_figures()
 
         # Log comparison summary
         if logger:
@@ -579,6 +626,15 @@ class MetricsCalculator:
             logger.print(f"[yellow]Accuracy Gap (Unlearned vs Retrained):[/yellow]")
             logger.print(f"  Retain Acc Gap:      {retain_acc_gap:.4f}")
             logger.print(f"  Forget Acc Gap:      {forget_acc_gap:.4f}")
-            logger.print(f"  Test Acc Gap:        {test_acc_gap:.4f}")
+            if test_acc_gap is not None:
+                logger.print(f"  Test Acc Gap:        {test_acc_gap:.4f}")
+            if val_gap_metrics:
+                logger.print(f"[yellow]Validation Gap (Unlearned vs Retrained):[/yellow]")
+                if "retain_val_accuracy_gap" in val_gap_metrics:
+                    logger.print(f"  Retain Val Acc Gap:  {val_gap_metrics['retain_val_accuracy_gap']:.4f}")
+                    logger.print(f"  Retain Val Loss Gap: {val_gap_metrics['retain_val_loss_gap']:.4f}")
+                if "forget_val_accuracy_gap" in val_gap_metrics:
+                    logger.print(f"  Forget Val Acc Gap:  {val_gap_metrics['forget_val_accuracy_gap']:.4f}")
+                    logger.print(f"  Forget Val Loss Gap: {val_gap_metrics['forget_val_loss_gap']:.4f}")
 
         return all_metrics
