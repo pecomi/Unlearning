@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -280,6 +281,11 @@ def main():
         logger.info(f"\n[cyan]Saving unlearned model...[/cyan]")
         unlearning.save_unlearned_model(str(checkpoint_path))
         logger.success(f"  ✓ Saved to: {checkpoint_path}")
+
+        result_path = run_checkpoint_dir / "unlearning_result.json"
+        with result_path.open("w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2)
+        logger.success(f"  ✓ Saved unlearning result to: {result_path}")
 
         if config.get("evaluation.use_test_during_unlearn", False):
             # Test set evaluation is useful for final reporting, but should stay
