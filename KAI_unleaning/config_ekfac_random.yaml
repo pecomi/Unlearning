@@ -39,8 +39,8 @@ training:
 unlearning:
   name: ekfac_influence
   fisher_batch_size: 8
-  step_size: 0.001
-  damping: 0.1
+  step_size: 0.007
+  damping: 0.05
   num_unlearn_steps: 2  # Run two EKFAC influence updates
   recompute_curvature_each_step: true
   unlearn_eval_interval: 1
