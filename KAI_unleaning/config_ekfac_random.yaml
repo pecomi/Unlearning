@@ -41,10 +41,8 @@ unlearning:
   fisher_batch_size: 8
   step_size: 0.001
   damping: 0.1
-  update_norm_clip: 5.0
-  layer_update_norm_ratio: null
-  num_unlearn_steps: 1  # Reference-aligned one-step EKFAC influence update
-  recompute_curvature_each_step: false
+  num_unlearn_steps: 2  # Run two EKFAC influence updates
+  recompute_curvature_each_step: true
   unlearn_eval_interval: 1
   max_eval_batches: 20
   max_curvature_batches: null

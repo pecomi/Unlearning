@@ -146,8 +146,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "method": self.name,
             "step_size": self.step_size,
             "damping": self.damping,
-            "update_norm_clip": self.update_norm_clip,
-            "layer_update_norm_ratio": self.layer_update_norm_ratio,
             "num_unlearn_steps": self.num_unlearn_steps,
             "recompute_curvature_each_step": self.recompute_curvature_each_step,
             "unlearn_eval_interval": self.unlearn_eval_interval,

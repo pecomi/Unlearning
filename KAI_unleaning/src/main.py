@@ -223,8 +223,6 @@ def main():
         elif unlearning_name == "ekfac_influence":
             logger.info(f"  • Step size: {unlearning_config.get('step_size', 1.0)}")
             logger.info(f"  • Damping: {unlearning_config.get('damping', 1e-3)}")
-            logger.info(f"  • Update norm clip: {unlearning_config.get('update_norm_clip', None)}")
-            logger.info(f"  • Layer update norm ratio: {unlearning_config.get('layer_update_norm_ratio', None)}")
             logger.info(f"  • Unlearn steps: {unlearning_config.get('num_unlearn_steps', 1)}")
             logger.info(f"  • Recompute curvature each step: {unlearning_config.get('recompute_curvature_each_step', False)}")
             logger.info(f"  • Eval interval: {unlearning_config.get('unlearn_eval_interval', 1)}")
@@ -239,8 +237,6 @@ def main():
             selection_weighting=unlearning_config.get("selection_weighting", 10.0),
             step_size=unlearning_config.get("step_size", 1.0),
             damping=unlearning_config.get("damping", 1e-3),
-            update_norm_clip=unlearning_config.get("update_norm_clip", None),
-            layer_update_norm_ratio=unlearning_config.get("layer_update_norm_ratio", None),
             num_unlearn_steps=unlearning_config.get("num_unlearn_steps", 1),
             recompute_curvature_each_step=unlearning_config.get("recompute_curvature_each_step", False),
             unlearn_eval_interval=unlearning_config.get("unlearn_eval_interval", 1),
