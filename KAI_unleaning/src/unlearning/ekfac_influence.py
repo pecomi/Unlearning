@@ -13,7 +13,7 @@ receive a curvature-scaled update.
 """
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -47,6 +47,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         update_norm_clip: Optional[float] = None,
         layer_update_norm_ratio: Optional[float] = None,
         num_unlearn_steps: int = 1,
+        step_size_schedule: Optional[Sequence[float]] = None,
+        scale_step_size_by_num_steps: bool = False,
         recompute_curvature_each_step: bool = False,
         unlearn_eval_interval: int = 1,
         max_eval_batches: Optional[int] = None,
@@ -61,6 +63,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         self.update_norm_clip = update_norm_clip
         self.layer_update_norm_ratio = layer_update_norm_ratio
         self.num_unlearn_steps = max(1, int(num_unlearn_steps))
+        self.step_size_schedule = self._normalize_step_size_schedule(step_size_schedule)
+        self.scale_step_size_by_num_steps = scale_step_size_by_num_steps
         self.recompute_curvature_each_step = recompute_curvature_each_step
         self.unlearn_eval_interval = max(0, int(unlearn_eval_interval))
         self.max_eval_batches = max_eval_batches
@@ -83,6 +87,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             logger.info(f"  Update norm clip: [cyan]{self.update_norm_clip or 'disabled'}[/cyan]")
             logger.info(f"  Layer update norm ratio: [cyan]{self.layer_update_norm_ratio or 'disabled'}[/cyan]")
             logger.info(f"  Unlearn steps: [cyan]{self.num_unlearn_steps}[/cyan]")
+            logger.info(f"  Step size schedule: [cyan]{self.step_size_schedule or 'disabled'}[/cyan]")
+            logger.info(f"  Scale step size by steps: [cyan]{self.scale_step_size_by_num_steps}[/cyan]")
             logger.info(f"  Recompute curvature each step: [cyan]{self.recompute_curvature_each_step}[/cyan]")
             logger.info(f"  Eval interval: [cyan]{self.unlearn_eval_interval or 'disabled'}[/cyan]")
             logger.info(f"  Max eval batches: [cyan]{self.max_eval_batches or 'all'}[/cyan]")
@@ -100,10 +106,15 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                     curvature_stats = self._estimate_ekfac_curvature(train_loader, logger)
 
                 forget_grads, forget_stats = self._compute_forget_gradient(forget_loader, logger)
-                update_stats = self._apply_influence_update(forget_grads)
+                effective_step_size = self._get_effective_step_size(unlearn_step)
+                update_stats = self._apply_influence_update(
+                    forget_grads,
+                    step_size=effective_step_size,
+                )
 
                 step_result = {
                     "step": unlearn_step + 1,
+                    "effective_step_size": effective_step_size,
                     "curvature_stats": curvature_stats,
                     "forget_stats": forget_stats,
                     "update_stats": update_stats,
@@ -112,12 +123,14 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
 
                 if logger:
                     logger.info(f"  Influence update applied ({unlearn_step + 1}/{self.num_unlearn_steps})")
+                    logger.info(f"    - Effective step size: {effective_step_size:.6f}")
                     logger.info(f"    - Updated parameters: {update_stats['updated_params']:,}")
                     logger.info(f"    - Raw update norm: {update_stats['raw_update_norm']:.6f}")
                     logger.info(f"    - Applied update norm: {update_stats['update_norm']:.6f}")
                     logger.info(f"    - Clip coefficient: {update_stats['clip_coef']:.6f}")
                     logger.log_metrics({
                         "curvature_batches": float(curvature_stats["batches"]),
+                        "effective_step_size": effective_step_size,
                         "forget_batches": float(forget_stats["batches"]),
                         "forget_grad_norm": forget_stats["grad_norm"],
                         "raw_update_norm": update_stats["raw_update_norm"],
@@ -147,6 +160,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "step_size": self.step_size,
             "damping": self.damping,
             "num_unlearn_steps": self.num_unlearn_steps,
+            "step_size_schedule": self.step_size_schedule,
+            "scale_step_size_by_num_steps": self.scale_step_size_by_num_steps,
             "recompute_curvature_each_step": self.recompute_curvature_each_step,
             "unlearn_eval_interval": self.unlearn_eval_interval,
             "max_eval_batches": self.max_eval_batches,
@@ -466,7 +481,26 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         wandb.log({"unlearning_eval/validation_history": wandb.Image(fig)}, step=steps[-1])
         plt.close(fig)
 
-    def _apply_influence_update(self, forget_grads: Dict[str, torch.Tensor]) -> dict:
+    def _normalize_step_size_schedule(self, schedule: Optional[Sequence[float]]) -> Optional[list]:
+        if schedule is None:
+            return None
+
+        schedule = [float(value) for value in schedule]
+        if len(schedule) != self.num_unlearn_steps:
+            raise ValueError(
+                "step_size_schedule length must match num_unlearn_steps "
+                f"({len(schedule)} != {self.num_unlearn_steps})."
+            )
+        return schedule
+
+    def _get_effective_step_size(self, unlearn_step: int) -> float:
+        if self.step_size_schedule is not None:
+            return self.step_size_schedule[unlearn_step]
+        if self.scale_step_size_by_num_steps:
+            return self.step_size / self.num_unlearn_steps
+        return self.step_size
+
+    def _apply_influence_update(self, forget_grads: Dict[str, torch.Tensor], step_size: float) -> dict:
         named_params = dict(self.model.model.named_parameters())
         updates = {}
         raw_update_norm_sq = 0.0
@@ -475,7 +509,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         def add_update(param_name: str, param: torch.Tensor, update: torch.Tensor) -> None:
             nonlocal raw_update_norm_sq, nonfinite_update_tensors
 
-            update = self.step_size * update
+            update = step_size * update
             if not torch.isfinite(update).all():
                 nonfinite_update_tensors += 1
                 update = torch.nan_to_num(update, nan=0.0, posinf=0.0, neginf=0.0)
@@ -589,6 +623,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "update_norm_clip": self.update_norm_clip,
             "layer_update_norm_ratio": self.layer_update_norm_ratio,
             "num_unlearn_steps": self.num_unlearn_steps,
+            "step_size_schedule": self.step_size_schedule,
+            "scale_step_size_by_num_steps": self.scale_step_size_by_num_steps,
             "recompute_curvature_each_step": self.recompute_curvature_each_step,
             "unlearn_eval_interval": self.unlearn_eval_interval,
             "max_eval_batches": self.max_eval_batches,

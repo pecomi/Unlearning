@@ -224,6 +224,8 @@ def main():
             logger.info(f"  • Step size: {unlearning_config.get('step_size', 1.0)}")
             logger.info(f"  • Damping: {unlearning_config.get('damping', 1e-3)}")
             logger.info(f"  • Unlearn steps: {unlearning_config.get('num_unlearn_steps', 1)}")
+            logger.info(f"  • Step size schedule: {unlearning_config.get('step_size_schedule', None)}")
+            logger.info(f"  • Scale step size by steps: {unlearning_config.get('scale_step_size_by_num_steps', False)}")
             logger.info(f"  • Recompute curvature each step: {unlearning_config.get('recompute_curvature_each_step', False)}")
             logger.info(f"  • Eval interval: {unlearning_config.get('unlearn_eval_interval', 1)}")
             logger.info(f"  • Max eval batches: {unlearning_config.get('max_eval_batches', None)}")
@@ -238,6 +240,8 @@ def main():
             step_size=unlearning_config.get("step_size", 1.0),
             damping=unlearning_config.get("damping", 1e-3),
             num_unlearn_steps=unlearning_config.get("num_unlearn_steps", 1),
+            step_size_schedule=unlearning_config.get("step_size_schedule", None),
+            scale_step_size_by_num_steps=unlearning_config.get("scale_step_size_by_num_steps", False),
             recompute_curvature_each_step=unlearning_config.get("recompute_curvature_each_step", False),
             unlearn_eval_interval=unlearning_config.get("unlearn_eval_interval", 1),
             max_eval_batches=unlearning_config.get("max_eval_batches", None),
