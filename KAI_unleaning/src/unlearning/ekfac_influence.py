@@ -44,11 +44,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         model,
         step_size: float = 0.01,
         damping: float = 1e-3,
-        update_norm_clip: Optional[float] = None,
-        layer_update_norm_ratio: Optional[float] = None,
         num_unlearn_steps: int = 1,
         step_size_schedule: Optional[Sequence[float]] = None,
-        scale_step_size_by_num_steps: bool = False,
         recompute_curvature_each_step: bool = False,
         unlearn_eval_interval: int = 1,
         max_eval_batches: Optional[int] = None,
@@ -60,11 +57,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         super().__init__(model, **kwargs)
         self.step_size = step_size
         self.damping = damping
-        self.update_norm_clip = update_norm_clip
-        self.layer_update_norm_ratio = layer_update_norm_ratio
         self.num_unlearn_steps = max(1, int(num_unlearn_steps))
         self.step_size_schedule = self._normalize_step_size_schedule(step_size_schedule)
-        self.scale_step_size_by_num_steps = scale_step_size_by_num_steps
         self.recompute_curvature_each_step = recompute_curvature_each_step
         self.unlearn_eval_interval = max(0, int(unlearn_eval_interval))
         self.max_eval_batches = max_eval_batches
@@ -84,11 +78,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             logger.print("\n[bold yellow]=== EKFAC Influence Unlearning ===[/bold yellow]")
             logger.info(f"  Step size: [cyan]{self.step_size}[/cyan]")
             logger.info(f"  Damping: [cyan]{self.damping}[/cyan]")
-            logger.info(f"  Update norm clip: [cyan]{self.update_norm_clip or 'disabled'}[/cyan]")
-            logger.info(f"  Layer update norm ratio: [cyan]{self.layer_update_norm_ratio or 'disabled'}[/cyan]")
             logger.info(f"  Unlearn steps: [cyan]{self.num_unlearn_steps}[/cyan]")
             logger.info(f"  Step size schedule: [cyan]{self.step_size_schedule or 'disabled'}[/cyan]")
-            logger.info(f"  Scale step size by steps: [cyan]{self.scale_step_size_by_num_steps}[/cyan]")
             logger.info(f"  Recompute curvature each step: [cyan]{self.recompute_curvature_each_step}[/cyan]")
             logger.info(f"  Eval interval: [cyan]{self.unlearn_eval_interval or 'disabled'}[/cyan]")
             logger.info(f"  Max eval batches: [cyan]{self.max_eval_batches or 'all'}[/cyan]")
@@ -127,7 +118,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                     logger.info(f"    - Updated parameters: {update_stats['updated_params']:,}")
                     logger.info(f"    - Raw update norm: {update_stats['raw_update_norm']:.6f}")
                     logger.info(f"    - Applied update norm: {update_stats['update_norm']:.6f}")
-                    logger.info(f"    - Clip coefficient: {update_stats['clip_coef']:.6f}")
                     logger.log_metrics({
                         "curvature_batches": float(curvature_stats["batches"]),
                         "effective_step_size": effective_step_size,
@@ -135,7 +125,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                         "forget_grad_norm": forget_stats["grad_norm"],
                         "raw_update_norm": update_stats["raw_update_norm"],
                         "update_norm": update_stats["update_norm"],
-                        "clip_coef": update_stats["clip_coef"],
                         "nonfinite_update_tensors": float(update_stats["nonfinite_update_tensors"]),
                     }, step=unlearn_step + 1, prefix="unlearning/")
 
@@ -161,7 +150,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "damping": self.damping,
             "num_unlearn_steps": self.num_unlearn_steps,
             "step_size_schedule": self.step_size_schedule,
-            "scale_step_size_by_num_steps": self.scale_step_size_by_num_steps,
             "recompute_curvature_each_step": self.recompute_curvature_each_step,
             "unlearn_eval_interval": self.unlearn_eval_interval,
             "max_eval_batches": self.max_eval_batches,
@@ -172,6 +160,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "eval_history": eval_history,
         }
 
+#layer별 h와 delta를 저장하기 위한 hook
     def _register_hooks(self) -> None:
         for name, module in self.model.model.named_modules():
             if isinstance(module, (nn.Linear, nn.Conv2d)):
@@ -184,6 +173,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             handle.remove()
         self._handles.clear()
 
+#activation=h, grad_output=delta로 저장. EKFAC에서 h는 입력의 패치화된 버전, delta는 출력에 대한 그라디언트의 플랫된 버전. 
     def _save_activation(self, module, inputs, output) -> None:
         self._states[module].activation = inputs[0].detach()
 
@@ -194,7 +184,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         model = self.model.model
         model.eval()
         criterion = nn.CrossEntropyLoss()
-
+        #ekfac A,B factor / EKFAC projected gradient second moment / diagonal Fisher 누적 값
         factor_sums = {}
         scaling_sums = {}
         diag_sums = {
@@ -496,8 +486,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
     def _get_effective_step_size(self, unlearn_step: int) -> float:
         if self.step_size_schedule is not None:
             return self.step_size_schedule[unlearn_step]
-        if self.scale_step_size_by_num_steps:
-            return self.step_size / self.num_unlearn_steps
         return self.step_size
 
     def _apply_influence_update(self, forget_grads: Dict[str, torch.Tensor], step_size: float) -> dict:
@@ -513,13 +501,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             if not torch.isfinite(update).all():
                 nonfinite_update_tensors += 1
                 update = torch.nan_to_num(update, nan=0.0, posinf=0.0, neginf=0.0)
-
-            if self.layer_update_norm_ratio is not None:
-                param_norm = param.detach().norm().item()
-                layer_update_norm = update.norm().item()
-                layer_limit = self.layer_update_norm_ratio * param_norm
-                if layer_limit > 0.0 and layer_update_norm > layer_limit:
-                    update = update * (layer_limit / (layer_update_norm + 1e-12))
 
             updates[param_name] = update
             raw_update_norm_sq += update.pow(2).sum().item()
@@ -556,9 +537,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 add_update(name, param, update)
 
             raw_update_norm = raw_update_norm_sq ** 0.5
-            clip_coef = 1.0
-            if self.update_norm_clip is not None and raw_update_norm > self.update_norm_clip:
-                clip_coef = self.update_norm_clip / (raw_update_norm + 1e-12)
 
             update_norm_sq = 0.0
             updated_params = 0
@@ -566,7 +544,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 if name not in updates:
                     continue
 
-                update = updates[name] * clip_coef
+                update = updates[name]
                 param.add_(update)
                 update_norm_sq += update.pow(2).sum().item()
                 updated_params += param.numel()
@@ -575,7 +553,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "updated_params": updated_params,
             "raw_update_norm": raw_update_norm,
             "update_norm": update_norm_sq ** 0.5,
-            "clip_coef": clip_coef,
             "nonfinite_update_tensors": nonfinite_update_tensors,
         }
 
@@ -620,11 +597,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "method": self.name,
             "step_size": self.step_size,
             "damping": self.damping,
-            "update_norm_clip": self.update_norm_clip,
-            "layer_update_norm_ratio": self.layer_update_norm_ratio,
             "num_unlearn_steps": self.num_unlearn_steps,
             "step_size_schedule": self.step_size_schedule,
-            "scale_step_size_by_num_steps": self.scale_step_size_by_num_steps,
             "recompute_curvature_each_step": self.recompute_curvature_each_step,
             "unlearn_eval_interval": self.unlearn_eval_interval,
             "max_eval_batches": self.max_eval_batches,
