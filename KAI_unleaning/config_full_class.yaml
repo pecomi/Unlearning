@@ -30,7 +30,7 @@ model:
 
 # Training Configuration (for retrain mode)
 training:
-  epochs: 50
+  epochs: 100
   batch_size: 64
   learning_rate: 0.1
   momentum: 0.9
@@ -51,6 +51,11 @@ unlearning:
 # Evaluation Configuration
 evaluation:
   batch_size: 128
+  use_test_during_unlearn: true
+  use_test_during_retrain: true
+  use_test_during_compare: true
+  train_unlearn_on_full_split: true
+  train_retrain_on_full_retain: true
   metrics:
     - accuracy
     - forget_quality
