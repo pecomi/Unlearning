@@ -51,6 +51,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         max_eval_batches: Optional[int] = None,
         max_curvature_batches: Optional[int] = None,
         max_forget_batches: Optional[int] = None,
+        forget_update_mode: str = "full_batch",
         device: str = "cuda",
         **kwargs,
     ):
@@ -64,10 +65,16 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         self.max_eval_batches = max_eval_batches
         self.max_curvature_batches = max_curvature_batches
         self.max_forget_batches = max_forget_batches
+        self.forget_update_mode = forget_update_mode
         self.device = device
         self._states: Dict[nn.Module, _LayerState] = {}
         self._handles = []
         self._diag_fisher: Dict[str, torch.Tensor] = {}
+        if self.forget_update_mode not in {"full_batch", "minibatch"}:
+            raise ValueError(
+                "forget_update_mode must be either 'full_batch' or 'minibatch' "
+                f"(got {self.forget_update_mode!r})."
+            )
 
     def unlearn(self, forget_loader, train_loader, **kwargs) -> dict:
         logger = kwargs.get("logger")
@@ -85,6 +92,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             logger.info(f"  Max eval batches: [cyan]{self.max_eval_batches or 'all'}[/cyan]")
             logger.info(f"  Curvature batches: [cyan]{self.max_curvature_batches or 'all'}[/cyan]")
             logger.info(f"  Forget batches: [cyan]{self.max_forget_batches or 'all'}[/cyan]")
+            logger.info(f"  Forget update mode: [cyan]{self.forget_update_mode}[/cyan]")
 
         step_results = []
         eval_history = []
@@ -96,12 +104,18 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 if self.recompute_curvature_each_step and unlearn_step > 0:
                     curvature_stats = self._estimate_ekfac_curvature(train_loader, logger)
 
-                forget_grads, forget_stats = self._compute_forget_gradient(forget_loader, logger)
                 effective_step_size = self._get_effective_step_size(unlearn_step)
-                update_stats = self._apply_influence_update(
-                    forget_grads,
-                    step_size=effective_step_size,
-                )
+                if self.forget_update_mode == "minibatch":
+                    forget_stats, update_stats = self._run_minibatch_forget_updates(
+                        forget_loader,
+                        step_size=effective_step_size,
+                    )
+                else:
+                    forget_grads, forget_stats = self._compute_forget_gradient(forget_loader, logger)
+                    update_stats = self._apply_influence_update(
+                        forget_grads,
+                        step_size=effective_step_size,
+                    )
 
                 step_result = {
                     "step": unlearn_step + 1,
@@ -153,6 +167,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "recompute_curvature_each_step": self.recompute_curvature_each_step,
             "unlearn_eval_interval": self.unlearn_eval_interval,
             "max_eval_batches": self.max_eval_batches,
+            "forget_update_mode": self.forget_update_mode,
             "curvature_stats": final_result["curvature_stats"],
             "forget_stats": final_result["forget_stats"],
             "update_stats": final_result["update_stats"],
@@ -213,6 +228,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 if state.activation is None or state.grad_output is None:
                     continue
                 a, b, h_proj, delta_proj = self._compute_batch_factors_and_projection(state)
+                #h와 delta에 대한 연산. A와 B를 구하게 됨
                 key = state.name
                 batch_factors[key] = (h_proj, delta_proj)
                 if key not in factor_sums:
@@ -236,7 +252,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
 
         if batches == 0 or total == 0:
             raise ValueError("No batches were available for EKFAC curvature estimation.")
-
+        #EKFAC의 KFE 기반 역행렬 근사에 필요한 고유값과 고유벡터 계산. A와 B는 각각 입력과 출력의 공분산 행렬로, 이들의 고유분해를 통해 KFE의 좌우 고유벡터(ua, ub)를 구함.
         for state in self._states.values():
             factor = factor_sums.get(state.name)
             if factor is None:
@@ -385,6 +401,80 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         grads = {name: grad / total for name, grad in grads.items()}
         grad_norm = torch.sqrt(sum(grad.pow(2).sum() for grad in grads.values())).item()
         return grads, {"batches": batches, "samples": total, "grad_norm": grad_norm}
+
+    def _compute_forget_batch_gradient(self, inputs, targets) -> Dict[str, torch.Tensor]:
+        model = self.model.model
+        criterion = nn.CrossEntropyLoss()
+
+        model.zero_grad(set_to_none=True)
+        loss = criterion(model(inputs), targets)
+        loss.backward()
+
+        grads = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                grads[name] = (
+                    torch.zeros_like(param, device=self.device)
+                    if param.grad is None
+                    else param.grad.detach().clone()
+                )
+        return grads
+
+    def _run_minibatch_forget_updates(self, dataloader, step_size: float) -> tuple:
+        model = self.model.model
+        model.eval()
+
+        total = 0
+        batches = 0
+        grad_norm_sum = 0.0
+        grad_norm_sq_sum = 0.0
+        raw_update_norm_sq = 0.0
+        update_norm_sq = 0.0
+        nonfinite_update_tensors = 0
+        updated_params = 0
+
+        iterator = tqdm(dataloader, desc="Mini-batch forget updates", unit="batch")
+        for inputs, targets in iterator:
+            if self.max_forget_batches is not None and batches >= self.max_forget_batches:
+                break
+
+            inputs = inputs.to(self.device)
+            targets = targets.to(self.device)
+            batch_size = inputs.size(0)
+
+            batch_grads = self._compute_forget_batch_gradient(inputs, targets)
+            batch_grad_norm = torch.sqrt(
+                sum(grad.pow(2).sum() for grad in batch_grads.values())
+            ).item()
+            batch_update_stats = self._apply_influence_update(batch_grads, step_size=step_size)
+
+            total += batch_size
+            batches += 1
+            grad_norm_sum += batch_grad_norm
+            grad_norm_sq_sum += batch_grad_norm ** 2
+            raw_update_norm_sq += batch_update_stats["raw_update_norm"] ** 2
+            update_norm_sq += batch_update_stats["update_norm"] ** 2
+            nonfinite_update_tensors += batch_update_stats["nonfinite_update_tensors"]
+            updated_params = batch_update_stats["updated_params"]
+
+        if total == 0:
+            raise ValueError("No samples were available for mini-batch forget updates.")
+
+        forget_stats = {
+            "batches": batches,
+            "samples": total,
+            "grad_norm": grad_norm_sum / batches,
+            "mean_batch_grad_norm": grad_norm_sum / batches,
+            "rms_batch_grad_norm": (grad_norm_sq_sum / batches) ** 0.5,
+        }
+        update_stats = {
+            "updated_params": updated_params,
+            "raw_update_norm": raw_update_norm_sq ** 0.5,
+            "update_norm": update_norm_sq ** 0.5,
+            "nonfinite_update_tensors": nonfinite_update_tensors,
+            "updates_applied": batches,
+        }
+        return forget_stats, update_stats
 
     def _evaluate_loaders(self, eval_loaders: dict) -> dict:
         metrics = {}
@@ -602,4 +692,5 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "recompute_curvature_each_step": self.recompute_curvature_each_step,
             "unlearn_eval_interval": self.unlearn_eval_interval,
             "max_eval_batches": self.max_eval_batches,
+            "forget_update_mode": self.forget_update_mode,
         }, save_path)

@@ -91,7 +91,8 @@ class Trainer:
             )
 
             # Learning rate scheduling
-            scheduler.step()
+            if scheduler is not None:
+                scheduler.step()
 
             val_loss, val_acc = self._validate(val_loader, criterion)
 
@@ -174,6 +175,9 @@ class Trainer:
             _, predicted = outputs.max(1)
             correct += predicted.eq(targets).sum().item()
             total += inputs.size(0)
+
+        if total == 0:
+            return 0.0, 0.0
 
         avg_loss = total_loss / total
         accuracy = correct / total

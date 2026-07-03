@@ -245,35 +245,29 @@ class MetricsCalculator:
         model.eval()
         model.to(self.device)
 
-        total_true_prob = 0
-        total_wrong_prob = 0
+        total_true_prob = 0.0
+        total_wrong_prob = 0.0
         num_samples = 0
 
         with torch.no_grad():
             for inputs, targets in dataloader:
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
-                batch_size = inputs.size(0)
 
                 # Forward pass
                 outputs = model(inputs)
                 probs = F.softmax(outputs, dim=1)
+                num_classes = probs.size(1)
 
-                # Get probabilities
-                for i in range(batch_size):
-                    target = targets[i]
-                    prob_vector = probs[i]
+                true_probs = probs.gather(1, targets.view(-1, 1)).squeeze(1)
+                if num_classes > 1:
+                    wrong_probs = (probs.sum(dim=1) - true_probs) / (num_classes - 1)
+                else:
+                    wrong_probs = torch.zeros_like(true_probs)
 
-                    # Probability of correct class
-                    true_prob = prob_vector[target].item()
-
-                    # Probability of wrong classes (average)
-                    wrong_indices = [j for j in range(len(prob_vector)) if j != target]
-                    wrong_prob = prob_vector[wrong_indices].mean().item()
-
-                    total_true_prob += true_prob
-                    total_wrong_prob += wrong_prob
-                    num_samples += 1
+                total_true_prob += true_probs.sum().item()
+                total_wrong_prob += wrong_probs.sum().item()
+                num_samples += targets.size(0)
 
         avg_true = total_true_prob / num_samples if num_samples > 0 else 0
         avg_wrong = total_wrong_prob / num_samples if num_samples > 0 else 0
@@ -483,6 +477,7 @@ class MetricsCalculator:
         retain_loader,
         forget_loader,
         test_loader=None,
+        val_loader=None,
         retain_val_loader=None,
         forget_val_loader=None,
         logger=None
@@ -496,6 +491,7 @@ class MetricsCalculator:
             retain_loader: DataLoader for retain set
             forget_loader: DataLoader for forget set
             test_loader: Optional DataLoader for test set
+            val_loader: Optional held-out validation set
             retain_val_loader: Optional DataLoader for retain validation set
             forget_val_loader: Optional DataLoader for forget validation set
             logger: Optional logger instance
@@ -528,6 +524,7 @@ class MetricsCalculator:
         retrained_val_metrics = {}
         val_gap_metrics = {}
         validation_loaders = {
+            "val": val_loader,
             "retain_val": retain_val_loader,
             "forget_val": forget_val_loader,
         }

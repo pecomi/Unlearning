@@ -116,17 +116,33 @@ def main():
     forget_loader = splits["forget_loader"]
     forget_val_loader = splits.get("forget_val_loader")
     retain_loader = splits["retain_loader"]
-    retain_val_loader = splits.get("retain_val_loader", splits["val_loader"])
+    retain_val_loader = splits.get("retain_val_loader")
     val_loader = splits["val_loader"]
     test_loader = splits["test_loader"]
+
+    evaluation_config = config.get("evaluation", {})
+    evaluation_protocol = evaluation_config.get("protocol", "tuning")
+    if evaluation_protocol not in {"tuning", "final"}:
+        raise ValueError(
+            "evaluation.protocol must be either 'tuning' or 'final' "
+            f"(got {evaluation_protocol!r})."
+        )
+    if evaluation_protocol == "final" and data_config.get("val_ratio", 0.0) != 0:
+        raise ValueError(
+            "Final protocol uses the full training split and requires data.val_ratio: 0. "
+            "Use a separate final config instead of reusing a tuning config."
+        )
 
     logger.info(f"  Train samples: {len(train_loader.dataset)}")
     logger.info(f"  Forget samples: {len(forget_loader.dataset)}")
     if forget_val_loader is not None:
         logger.info(f"  Forget val samples: {len(forget_val_loader.dataset)}")
     logger.info(f"  Retain samples: {len(retain_loader.dataset)}")
-    logger.info(f"  Retain val samples: {len(retain_val_loader.dataset)}")
+    if retain_val_loader is not None:
+        logger.info(f"  Retain val samples: {len(retain_val_loader.dataset)}")
+    logger.info(f"  Validation samples: {len(val_loader.dataset)}")
     logger.info(f"  Test samples: {len(test_loader.dataset)}")
+    logger.info(f"  Evaluation protocol: {evaluation_protocol}")
 
 
     # 모델 설정
@@ -228,6 +244,7 @@ def main():
             logger.info(f"  • Recompute curvature each step: {unlearning_config.get('recompute_curvature_each_step', False)}")
             logger.info(f"  • Eval interval: {unlearning_config.get('unlearn_eval_interval', 1)}")
             logger.info(f"  • Max eval batches: {unlearning_config.get('max_eval_batches', None)}")
+            logger.info(f"  • Forget update mode: {unlearning_config.get('forget_update_mode', 'full_batch')}")
         logger.info(f"  • Fisher batch size: {fisher_batch_size}\n")
 
         # unlearning 팩토리를 통해 config에 명시된 언러닝 방식 로드
@@ -245,23 +262,22 @@ def main():
             max_eval_batches=unlearning_config.get("max_eval_batches", None),
             max_curvature_batches=unlearning_config.get("max_curvature_batches", None),
             max_forget_batches=unlearning_config.get("max_forget_batches", None),
+            forget_update_mode=unlearning_config.get("forget_update_mode", "full_batch"),
             device=config.get("device", "cuda")
         )
 
         unlearn_train_dataset = train_loader.dataset
         unlearn_forget_dataset = forget_loader.dataset
-        use_full_split_for_unlearn = config.get("evaluation.train_unlearn_on_full_split", False)
+        use_full_split_for_unlearn = evaluation_protocol == "final"
         if use_full_split_for_unlearn:
             val_datasets = []
-            if retain_val_loader is not None and len(retain_val_loader.dataset) > 0:
-                val_datasets.append(retain_val_loader.dataset)
-            if forget_val_loader is not None and len(forget_val_loader.dataset) > 0:
-                val_datasets.append(forget_val_loader.dataset)
+            if val_loader is not None and len(val_loader.dataset) > 0:
+                val_datasets.append(val_loader.dataset)
 
             if val_datasets:
                 unlearn_train_dataset = ConcatDataset([train_loader.dataset, *val_datasets])
                 logger.info(
-                    f"Using train + validation split for EKFAC curvature: "
+                    f"Using train + validation split for final unlearning curvature: "
                     f"{len(unlearn_train_dataset)} samples"
                 )
 
@@ -271,7 +287,7 @@ def main():
                     forget_val_loader.dataset,
                 ])
                 logger.info(
-                    f"Using forget train + forget validation for forget gradient: "
+                    f"Using forget train + forget validation for final forget gradient: "
                     f"{len(unlearn_forget_dataset)} samples"
                 )
 
@@ -294,13 +310,18 @@ def main():
         unlearn_eval_loaders = {}
         if use_full_split_for_unlearn:
             logger.info(
-                "Skipping validation-set monitoring during unlearn because validation "
-                "data is included in the final unlearning data."
+                "Skipping validation-set monitoring during final unlearn protocol because "
+                "validation data may be included in the final training data."
             )
-        else:
+        elif data_config.get("split_strategy", "random") == "label_based":
             unlearn_eval_loaders = {
                 "retain_val": retain_val_loader,
                 "forget_val": forget_val_loader,
+                "val": val_loader,
+            }
+        else:
+            unlearn_eval_loaders = {
+                "val": val_loader,
             }
 
         result = unlearning.unlearn(
@@ -330,6 +351,7 @@ def main():
             logger.print("\n[cyan]▶ Computing Unlearning Metrics[/cyan]")
             metrics_calculator = MetricsCalculator(
                 device=config.get("device", "cuda"),
+                enable_viz=config.get("evaluation.enable_visualizations", True),
                 dataset_name=dataset_name
             )
             unlearn_metrics = metrics_calculator.compute_all_metrics(
@@ -366,7 +388,7 @@ def main():
         training_config = config.get("training", {})
 
         retrain_train_loader = retain_loader
-        if config.get("evaluation.train_retrain_on_full_retain", False):
+        if evaluation_protocol == "final" and retain_val_loader is not None and len(retain_val_loader.dataset) > 0:
             retrain_dataset = ConcatDataset([retain_loader.dataset, retain_val_loader.dataset])
             retrain_train_loader = DataLoader(
                 retrain_dataset,
@@ -376,7 +398,7 @@ def main():
                 pin_memory=use_pin_memory,
             )
             logger.info(
-                f"Training retrained model on retain train + retain val: "
+                f"Training final retrained model on retain train + retain val: "
                 f"{len(retrain_train_loader.dataset)} samples"
             )
 
@@ -397,18 +419,29 @@ def main():
         logger.print("\n[cyan]▶ Evaluating Retrained Model on Validation Sets[/cyan]")
         metrics_calculator = MetricsCalculator(
             device=config.get("device", "cuda"),
+            enable_viz=config.get("evaluation.enable_visualizations", True),
             dataset_name=dataset_name
         )
         retrain_val_metrics = {}
 
-        retain_val_metrics = metrics_calculator.compute_classification_metrics(
+        val_metrics = metrics_calculator.compute_classification_metrics(
             retrained_model.model,
-            retain_val_loader
+            val_loader
         )
         retrain_val_metrics.update({
-            f"retain_val_{key}": value
-            for key, value in retain_val_metrics.items()
+            f"val_{key}": value
+            for key, value in val_metrics.items()
         })
+
+        if retain_val_loader is not None and len(retain_val_loader.dataset) > 0:
+            retain_val_metrics = metrics_calculator.compute_classification_metrics(
+                retrained_model.model,
+                retain_val_loader
+            )
+            retrain_val_metrics.update({
+                f"retain_val_{key}": value
+                for key, value in retain_val_metrics.items()
+            })
 
         if forget_val_loader is not None and len(forget_val_loader.dataset) > 0:
             forget_val_metrics = metrics_calculator.compute_classification_metrics(
@@ -480,15 +513,16 @@ def main():
         # 모델 비교를 위한 메트릭 계산
         metrics_calculator = MetricsCalculator(
             device=config.get("device", "cuda"),
+            enable_viz=config.get("evaluation.enable_visualizations", True),
             dataset_name=dataset_name
         )
 
-        use_test_during_compare = config.get("evaluation.use_test_during_compare", False)
+        use_test_during_compare = evaluation_protocol == "final"
         compare_test_loader = test_loader if use_test_during_compare else None
         if not use_test_during_compare:
             logger.info(
                 "Skipping test-set evaluation during compare mode. "
-                "Set evaluation.use_test_during_compare=true for final reporting."
+                "Use evaluation.protocol=final in a separate final config for final reporting."
             )
 
         all_metrics = metrics_calculator.compare_with_gold_standard(
@@ -497,6 +531,7 @@ def main():
             retain_loader=retain_loader,
             forget_loader=forget_loader,
             test_loader=compare_test_loader,
+            val_loader=val_loader,
             retain_val_loader=retain_val_loader,
             forget_val_loader=forget_val_loader,
             logger=logger

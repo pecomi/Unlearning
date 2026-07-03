@@ -42,20 +42,20 @@ unlearning:
   step_size: 0.007
   damping: 0.05
   num_unlearn_steps: 3  # Run two EKFAC influence updates
-  step_size_schedule: [0.004, 0.0015, 0.0007]
+  step_size_schedule: [0.007, 0.003, 0.001]
   recompute_curvature_each_step: true
   unlearn_eval_interval: 1
   max_eval_batches: 20
   max_curvature_batches: null
   max_forget_batches: null
+  forget_update_mode: minibatch
 
 evaluation:
+  protocol: tuning
   batch_size: 128
   use_test_during_unlearn: false
   use_test_during_retrain: false
-  use_test_during_compare: true
-  train_unlearn_on_full_split: true
-  train_retrain_on_full_retain: true
+  enable_visualizations: false
   metrics:
     - accuracy
     - forget_quality

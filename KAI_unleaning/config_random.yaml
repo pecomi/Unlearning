@@ -50,12 +50,11 @@ unlearning:
 
 # Evaluation Configuration
 evaluation:
+  protocol: tuning
   batch_size: 128
-  use_test_during_unlearn: true
-  use_test_during_retrain: true
-  use_test_during_compare: true
-  train_unlearn_on_full_split: true
-  train_retrain_on_full_retain: true
+  use_test_during_unlearn: false
+  use_test_during_retrain: false
+  enable_visualizations: false
   metrics:
     - accuracy
     - forget_quality

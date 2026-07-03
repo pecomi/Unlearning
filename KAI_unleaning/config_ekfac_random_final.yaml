@@ -1,5 +1,4 @@
-# KAI Unlearning - EKFAC Influence Label-Based Configuration
-# Forgets a specific class with EKFAC influence-function unlearning.
+# KAI Unlearning - EKFAC Influence Random Final Configuration
 
 seed: 42
 device: cuda
@@ -8,16 +7,16 @@ num_workers: 4
 pin_memory: false
 
 data_dir: ./data
-checkpoint_dir: ./runs/ekfac_label_based
-baseline_checkpoint: ./checkpoints/baseline/trained_model.pth
+checkpoint_dir: ./runs/ekfac_random_final
+baseline_checkpoint: ./checkpoints/baseline_final/trained_model.pth
 log_dir: ./logs
 
 data:
   name: cifar10
-  split_strategy: label_based
-  forget_labels: [4]
+  split_strategy: random
+  forget_labels: null
   forget_ratio: 0.1
-  val_ratio: 0.1
+  val_ratio: 0
 
 model:
   name: resnet18
@@ -41,20 +40,20 @@ unlearning:
   fisher_batch_size: 250
   step_size: 0.007
   damping: 0.05
-  num_unlearn_steps: 3  # Run two EKFAC influence updates
+  num_unlearn_steps: 3
   step_size_schedule: [0.004, 0.0015, 0.0007]
   recompute_curvature_each_step: true
-  unlearn_eval_interval: 1
-  max_eval_batches: 20
+  unlearn_eval_interval: 0
+  max_eval_batches: null
   max_curvature_batches: null
   max_forget_batches: null
 
 evaluation:
-  protocol: tuning
+  protocol: final
   batch_size: 250
   use_test_during_unlearn: false
   use_test_during_retrain: false
-  enable_visualizations: false
+  enable_visualizations: true
   metrics:
     - accuracy
     - forget_quality
@@ -63,7 +62,7 @@ evaluation:
 wandb:
   project: kai-unlearning_v4
   entity: null
-  run_name_base: CIFAR10-ResNet18-EKFACInfluence-LabelBased-Class4
+  run_name_base: CIFAR10-ResNet18-EKFACInfluence-Random10-Final
   mode: online
 
 logging:

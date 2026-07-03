@@ -1,33 +1,28 @@
-# KAI Unlearning - Pretrain Configuration
-# This config trains a single baseline model for all unlearning experiments
+# KAI Unlearning - Final Baseline Configuration
+# Trains the final baseline on the full CIFAR train split after tuning is fixed.
 
-# Global Settings
 seed: 42
 device: cuda
 cuda_visible_devices: "0"
 num_workers: 0
 pin_memory: false
 
-# Project Paths
 data_dir: ./data
-checkpoint_dir: ./checkpoints/baseline  # Fixed location for baseline model
+checkpoint_dir: ./checkpoints/baseline_final
 log_dir: ./logs
 
-# Data Configuration
 data:
   name: cifar10
   split_strategy: label_based
   forget_labels: [4]
   forget_ratio: 0.1
-  val_ratio: 0.1
+  val_ratio: 0
 
-# Model Configuration
 model:
   name: resnet18
   pretrained: false
   num_classes: 10
 
-# Training Configuration
 training:
   epochs: 50
   batch_size: 64
@@ -40,30 +35,29 @@ training:
   optimizer:
     name: sgd
 
-# Unlearning Configuration (not used in pretrain mode)
 unlearning:
   name: ssd
   dampening_constant: 1.0
   selection_weighting: 10.0
   fisher_batch_size: 8
 
-# Evaluation Configuration
 evaluation:
-  protocol: tuning
+  protocol: final
   batch_size: 128
+  use_test_during_unlearn: false
+  use_test_during_retrain: false
+  enable_visualizations: true
   metrics:
     - accuracy
     - forget_quality
     - model_utility
 
-# Wandb Configuration
 wandb:
   project: kai-unlearning_v4
   entity: null
-  run_name_base: CIFAR10-ResNet18-Baseline  # Base name, mode suffix will be added
+  run_name_base: CIFAR10-ResNet18-Baseline-Final
   mode: online
 
-# Logging Configuration
 logging:
   level: INFO
   log_to_file: true
