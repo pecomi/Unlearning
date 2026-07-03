@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["train", "unlearn", "retrain", "evaluate", "full", "compare"],
+        choices=["train", "unlearn", "retrain", "full", "compare"],
         default="full",
         help="Execution mode (retrain: train from scratch on retain data only)"
     )
@@ -37,13 +37,6 @@ def parse_args():
         type=str,
         default=None,
         help="Path to model checkpoint"
-    )
-    parser.add_argument(
-        "--model-type",
-        type=str,
-        choices=["pretrain", "unlearned", "retrained"],
-        default=None,
-        help="Model type for evaluation mode (pretrain: evaluate pretrained model, unlearned: evaluate unlearned model, retrained: evaluate retrained model)"
     )
     return parser.parse_args()
 
@@ -82,6 +75,8 @@ def main():
 
     # 데이터셋 설정
     data_config = config.get("data", {})
+    evaluation_config = config.get("evaluation", {})
+    training_config = config.get("training", {})
     dataset_name = data_config.get("name", "cifar10")
     data_dir = config.get("data_dir", "./data")
 
@@ -104,7 +99,8 @@ def main():
     splits = dataset.create_splits(
         forget_ratio=data_config.get("forget_ratio", 0.1),
         val_ratio=data_config.get("val_ratio", 0.1),
-        batch_size=config.get("training.batch_size", 128),
+        batch_size=training_config.get("batch_size", 128),
+        eval_batch_size=evaluation_config.get("batch_size", training_config.get("batch_size", 128)),
         num_workers=config.get("num_workers", 4),
         seed=seed,
         pin_memory=use_pin_memory,
@@ -120,7 +116,6 @@ def main():
     val_loader = splits["val_loader"]
     test_loader = splits["test_loader"]
 
-    evaluation_config = config.get("evaluation", {})
     evaluation_protocol = evaluation_config.get("protocol", "tuning")
     if evaluation_protocol not in {"tuning", "final"}:
         raise ValueError(
@@ -165,7 +160,6 @@ def main():
         "train": "train",
         "unlearn": "unlearn",
         "retrain": "retrain",
-        "evaluate": "evaluate",
         "full": "full",
         "compare": "compare"
     }
@@ -184,7 +178,6 @@ def main():
         logger.print("\n[bold green]=== Training Phase ===[/bold green]")
         logger.info(f"Checkpoints will be saved to: {run_checkpoint_dir}")
 
-        training_config = config.get("training", {})
         model.model = trainer.train(
             train_loader=train_loader,
             val_loader=val_loader,
@@ -201,14 +194,19 @@ def main():
         )
         logger.success(f"Saved trained model to: {checkpoint_path}")
 
-        # Test set 평가
-        logger.print("\n[cyan]▶ Evaluating Trained Model on Test Set[/cyan]")
-        test_loss, test_acc = trainer.evaluate(test_loader)
+        if evaluation_protocol == "final":
+            logger.print("\n[cyan]▶ Evaluating Trained Model on Test Set[/cyan]")
+            test_loss, test_acc = trainer.evaluate(test_loader)
 
-        logger.log_metrics({
-            "test_accuracy": test_acc,
-            "test_loss": test_loss
-        }, step=training_config.get("epochs", 100), prefix="train/")
+            logger.log_metrics({
+                "test_accuracy": test_acc,
+                "test_loss": test_loss
+            }, step=training_config.get("epochs", 100), prefix="train/")
+        else:
+            logger.info(
+                "Skipping test-set evaluation during train mode. "
+                "Use a separate final config for test reporting."
+            )
 
 
     # Unlearn 모드
@@ -342,9 +340,7 @@ def main():
             json.dump(result, f, indent=2)
         logger.success(f"  ✓ Saved unlearning result to: {result_path}")
 
-        if config.get("evaluation.use_test_during_unlearn", False):
-            # Test set evaluation is useful for final reporting, but should stay
-            # disabled while tuning unlearning hyperparameters.
+        if evaluation_protocol == "final":
             logger.print("\n[cyan]▶ Evaluating Unlearned Model on Test Set[/cyan]")
             test_loss, test_acc = trainer.evaluate(test_loader)
 
@@ -365,7 +361,7 @@ def main():
         else:
             logger.info(
                 "Skipping test-set evaluation during unlearn mode. "
-                "Use validation metrics for tuning, then run compare/final evaluation for reporting."
+                "Use validation metrics for tuning, then run a separate final config for test reporting."
             )
 
 
@@ -385,14 +381,12 @@ def main():
         # retrain을 위한 트레이너 객체 생성
         retrain_trainer = Trainer(retrained_model, cfg_dict, logger)
 
-        training_config = config.get("training", {})
-
         retrain_train_loader = retain_loader
         if evaluation_protocol == "final" and retain_val_loader is not None and len(retain_val_loader.dataset) > 0:
             retrain_dataset = ConcatDataset([retain_loader.dataset, retain_val_loader.dataset])
             retrain_train_loader = DataLoader(
                 retrain_dataset,
-                batch_size=config.get("training.batch_size", 128),
+                batch_size=training_config.get("batch_size", 128),
                 shuffle=True,
                 num_workers=config.get("num_workers", 4),
                 pin_memory=use_pin_memory,
@@ -459,8 +453,7 @@ def main():
             prefix="retrain_val/"
         )
 
-        if config.get("evaluation.use_test_during_retrain", False):
-            # Keep test-set evaluation out of tuning by default.
+        if evaluation_protocol == "final":
             logger.print("\n[cyan]▶ Evaluating Retrained Model on Test Set[/cyan]")
             test_loss, test_acc = retrain_trainer.evaluate(test_loader)
 
@@ -471,7 +464,7 @@ def main():
         else:
             logger.info(
                 "Skipping test-set evaluation during retrain mode. "
-                "Use validation metrics for tuning, then run compare/final evaluation for reporting."
+                "Use validation metrics for tuning, then run a separate final config for test reporting."
             )
 
         retrain_trainer.finish()

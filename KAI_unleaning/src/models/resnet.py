@@ -20,5 +20,6 @@ class ResNet18(BaseModel):
 
     def create_model(self) -> nn.Module:
         self.model = torchvision.models.resnet18(weights=None)
+        self.model.fc = nn.Linear(self.model.fc.in_features, self.num_classes)
 
         return self.model

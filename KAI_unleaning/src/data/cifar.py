@@ -88,10 +88,12 @@ class CIFAR10Dataset(BaseDataset):
 
     def create_splits(self, forget_ratio: float, val_ratio: float,
                      batch_size: int, num_workers: int, seed: int,
+                     eval_batch_size: int = None,
                      pin_memory: bool = True, split_strategy: str = "random",
                      forget_labels: list = None) -> dict:
         torch.manual_seed(seed)
         g = torch.Generator().manual_seed(seed)
+        eval_batch_size = eval_batch_size or batch_size
         targets = torch.tensor(self.train_dataset.targets)
         train_pool_indices, val_indices = _class_balanced_train_val_indices(
             targets,
@@ -131,17 +133,6 @@ class CIFAR10Dataset(BaseDataset):
                 if targets[idx].item() not in forget_label_set
             ]
 
-            # DEBUG: Verify forget set contains only specified labels
-            actual_forget_labels = [self.train_dataset.targets[i] for i in forget_indices]
-            unique_forget_labels = sorted(set(actual_forget_labels))
-            print(f"[DEBUG] Label-based split:")
-            print(f"  Requested forget_labels: {forget_labels}")
-            print(f"  Actual labels in forget set: {unique_forget_labels}")
-            print(f"  Forget set size: {len(forget_indices)}")
-            print(f"  Forget val set size: {len(forget_val_indices)}")
-            print(f"  Retain val set size: {len(retain_val_indices)}")
-            print(f"  Retain set size: {len(retain_indices)}")
-
         elif split_strategy == "all_labels":
             # Per-class forget split on the training pool; validation stays one shared set.
             forget_indices, retain_indices = [], []
@@ -174,12 +165,12 @@ class CIFAR10Dataset(BaseDataset):
         # Create dataloaders
         return {
             "train_loader": self._create_dataloader(full_train_set, batch_size, True, num_workers, pin_memory=pin_memory),
-            "forget_loader": self._create_dataloader(forget_set, batch_size, False, num_workers, pin_memory=pin_memory),
-            "forget_val_loader": self._create_dataloader(forget_val_set, batch_size, False, num_workers, pin_memory=pin_memory) if forget_val_set is not None else None,
+            "forget_loader": self._create_dataloader(forget_set, eval_batch_size, False, num_workers, pin_memory=pin_memory),
+            "forget_val_loader": self._create_dataloader(forget_val_set, eval_batch_size, False, num_workers, pin_memory=pin_memory) if forget_val_set is not None else None,
             "retain_loader": self._create_dataloader(retain_set, batch_size, True, num_workers, pin_memory=pin_memory),
-            "retain_val_loader": self._create_dataloader(retain_val_set, batch_size, False, num_workers, pin_memory=pin_memory) if retain_val_set is not None else None,
-            "val_loader": self._create_dataloader(val_set, batch_size, False, num_workers, pin_memory=pin_memory),
-            "test_loader": self._create_dataloader(self.test_dataset, batch_size, False, num_workers, pin_memory=pin_memory),
+            "retain_val_loader": self._create_dataloader(retain_val_set, eval_batch_size, False, num_workers, pin_memory=pin_memory) if retain_val_set is not None else None,
+            "val_loader": self._create_dataloader(val_set, eval_batch_size, False, num_workers, pin_memory=pin_memory),
+            "test_loader": self._create_dataloader(self.test_dataset, eval_batch_size, False, num_workers, pin_memory=pin_memory),
         }
 
 
@@ -221,11 +212,13 @@ class CIFAR100Dataset(BaseDataset):
 
     def create_splits(self, forget_ratio: float, val_ratio: float,
                      batch_size: int, num_workers: int, seed: int,
+                     eval_batch_size: int = None,
                      pin_memory: bool = True, split_strategy: str = "random",
                      forget_labels: list = None) -> dict:
         
         torch.manual_seed(seed)
         g = torch.Generator().manual_seed(seed)
+        eval_batch_size = eval_batch_size or batch_size
         targets = torch.tensor(self.train_dataset.targets)
         train_pool_indices, val_indices = _class_balanced_train_val_indices(
             targets,
@@ -293,10 +286,10 @@ class CIFAR100Dataset(BaseDataset):
 
         return {
             "train_loader": self._create_dataloader(full_train_set, batch_size, True, num_workers, pin_memory=pin_memory),
-            "forget_loader": self._create_dataloader(forget_set, batch_size, False, num_workers, pin_memory=pin_memory),
-            "forget_val_loader": self._create_dataloader(forget_val_set, batch_size, False, num_workers, pin_memory=pin_memory) if forget_val_set is not None else None,
+            "forget_loader": self._create_dataloader(forget_set, eval_batch_size, False, num_workers, pin_memory=pin_memory),
+            "forget_val_loader": self._create_dataloader(forget_val_set, eval_batch_size, False, num_workers, pin_memory=pin_memory) if forget_val_set is not None else None,
             "retain_loader": self._create_dataloader(retain_set, batch_size, True, num_workers, pin_memory=pin_memory),
-            "retain_val_loader": self._create_dataloader(retain_val_set, batch_size, False, num_workers, pin_memory=pin_memory) if retain_val_set is not None else None,
-            "val_loader": self._create_dataloader(val_set, batch_size, False, num_workers, pin_memory=pin_memory),
-            "test_loader": self._create_dataloader(self.test_dataset, batch_size, False, num_workers, pin_memory=pin_memory),
+            "retain_val_loader": self._create_dataloader(retain_val_set, eval_batch_size, False, num_workers, pin_memory=pin_memory) if retain_val_set is not None else None,
+            "val_loader": self._create_dataloader(val_set, eval_batch_size, False, num_workers, pin_memory=pin_memory),
+            "test_loader": self._create_dataloader(self.test_dataset, eval_batch_size, False, num_workers, pin_memory=pin_memory),
         }

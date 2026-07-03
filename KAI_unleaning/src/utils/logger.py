@@ -114,6 +114,10 @@ class Logger:
             self.info("WandB disabled. Skipping initialization.")
             return
 
+        if self._wandb_run is not None:
+            self.info("WandB already initialized. Reusing the active run.")
+            return
+
         wandb.init(
             project=project,
             entity=entity,

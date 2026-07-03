@@ -12,7 +12,6 @@ pin_memory: false
 data_dir: ./data
 checkpoint_dir: ./runs/full_class  # Task-specific output directory
 baseline_checkpoint: ./checkpoints/baseline/trained_model.pth  # Shared baseline
-log_dir: ./logs
 
 # Data Configuration
 data:
@@ -32,14 +31,13 @@ model:
 training:
   epochs: 100
   batch_size: 64
-  learning_rate: 0.1
-  momentum: 0.9
-  weight_decay: 5e-4
   scheduler:
     name: cosine
-    warmup_epochs: 1
   optimizer:
     name: sgd
+    learning_rate: 0.1
+    momentum: 0.9
+    weight_decay: 5e-4
 
 # Unlearning Configuration (SSD)
 unlearning:
@@ -52,8 +50,6 @@ unlearning:
 evaluation:
   protocol: tuning
   batch_size: 128
-  use_test_during_unlearn: false
-  use_test_during_retrain: false
   enable_visualizations: false
   metrics:
     - accuracy
@@ -70,5 +66,3 @@ wandb:
 # Logging Configuration
 logging:
   level: INFO
-  log_to_file: true
-  rich_formatting: true

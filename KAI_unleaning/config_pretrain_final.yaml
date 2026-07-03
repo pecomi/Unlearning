@@ -9,7 +9,6 @@ pin_memory: false
 
 data_dir: ./data
 checkpoint_dir: ./checkpoints/baseline_final
-log_dir: ./logs
 
 data:
   name: cifar10
@@ -26,26 +25,17 @@ model:
 training:
   epochs: 100
   batch_size: 64
-  learning_rate: 0.1
-  momentum: 0.9
-  weight_decay: 5e-4
   scheduler:
     name: cosine
-    warmup_epochs: 1
   optimizer:
     name: sgd
-
-unlearning:
-  name: ssd
-  dampening_constant: 1.0
-  selection_weighting: 10.0
-  fisher_batch_size: 8
+    learning_rate: 0.1
+    momentum: 0.9
+    weight_decay: 5e-4
 
 evaluation:
   protocol: final
   batch_size: 128
-  use_test_during_unlearn: false
-  use_test_during_retrain: false
   enable_visualizations: true
   metrics:
     - accuracy
@@ -60,5 +50,3 @@ wandb:
 
 logging:
   level: INFO
-  log_to_file: true
-  rich_formatting: true

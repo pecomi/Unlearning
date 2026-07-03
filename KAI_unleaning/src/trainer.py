@@ -206,6 +206,9 @@ class Trainer:
                 correct += predicted.eq(targets).sum().item()
                 total += inputs.size(0)
 
+        if total == 0:
+            return 0.0, 0.0
+
         avg_loss = total_loss / total
         accuracy = correct / total
 
@@ -243,12 +246,11 @@ class Trainer:
     def _create_scheduler(self, optimizer, config: dict, epochs: int):
         """Create learning rate scheduler from configuration."""
         name = config.get("name", "cosine").lower()
-        warmup_epochs = config.get("warmup_epochs", 0)
 
         if name == "cosine":
             return CosineAnnealingLR(
                 optimizer,
-                T_max=epochs - warmup_epochs,
+                T_max=epochs,
                 eta_min=1e-6
             )
         elif name == "step":

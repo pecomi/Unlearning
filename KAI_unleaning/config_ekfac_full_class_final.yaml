@@ -9,7 +9,6 @@ pin_memory: false
 data_dir: ./data
 checkpoint_dir: ./runs/ekfac_full_class_final
 baseline_checkpoint: ./checkpoints/baseline_final/trained_model.pth
-log_dir: ./logs
 
 data:
   name: cifar10
@@ -26,22 +25,21 @@ model:
 training:
   epochs: 100
   batch_size: 64
-  learning_rate: 0.1
-  momentum: 0.9
-  weight_decay: 5e-4
   scheduler:
     name: cosine
-    warmup_epochs: 1
   optimizer:
     name: sgd
+    learning_rate: 0.1
+    momentum: 0.9
+    weight_decay: 5e-4
 
 unlearning:
   name: ekfac_influence
-  fisher_batch_size: 250
+  fisher_batch_size: 128
   step_size: 0.007
   damping: 0.05
-  num_unlearn_steps: 3
-  step_size_schedule: [0.007, 0.003, 0.001]
+  num_unlearn_steps: 1
+  step_size_schedule: [0.01]
   recompute_curvature_each_step: true
   unlearn_eval_interval: 0
   max_eval_batches: null
@@ -51,9 +49,7 @@ unlearning:
 
 evaluation:
   protocol: final
-  batch_size: 250
-  use_test_during_unlearn: false
-  use_test_during_retrain: false
+  batch_size: 128
   enable_visualizations: true
   metrics:
     - accuracy
@@ -68,5 +64,3 @@ wandb:
 
 logging:
   level: INFO
-  log_to_file: true
-  rich_formatting: true

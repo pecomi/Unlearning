@@ -38,7 +38,8 @@ class BaseDataset(ABC):
 
     @abstractmethod
     def create_splits(self, forget_ratio: float, val_ratio: float,
-                     batch_size: int, num_workers: int, seed: int) -> dict:
+                     batch_size: int, num_workers: int, seed: int,
+                     eval_batch_size: int = None, **kwargs) -> dict:
         """
         Create train/forget/retain/val splits for unlearning experiments.
 
