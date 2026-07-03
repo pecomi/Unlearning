@@ -29,7 +29,7 @@ model:
 
 # Training Configuration
 training:
-  epochs: 50
+  epochs: 100
   batch_size: 64
   learning_rate: 0.1
   momentum: 0.9
