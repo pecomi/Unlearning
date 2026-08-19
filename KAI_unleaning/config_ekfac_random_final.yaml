@@ -3,7 +3,7 @@
 seed: 42
 device: cuda
 cuda_visible_devices: "0"
-num_workers: 4
+num_workers: 0
 pin_memory: false
 
 data_dir: ./data
