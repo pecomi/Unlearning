@@ -64,7 +64,7 @@ def write_summary_csv(rows, output_path: Path) -> None:
         "status",
         "returncode",
         "error",
-        "correction_strength",
+        "step_size",
         "damping",
         "fisher_batch_size",
         "num_unlearn_steps",
@@ -91,8 +91,7 @@ def main():
     parser.add_argument("--config", default="config_ekfac_label_based.yaml")
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument(
-        "--correction-strengths", "--step-sizes",
-        dest="correction_strengths", default="0.03,0.063,0.1",
+        "--step-sizes", dest="step_sizes", default="0.007,0.01,0.015,0.02,0.03",
     )
     parser.add_argument(
         "--dampings", dest="dampings", default="0.02,0.05,0.1",
@@ -119,22 +118,22 @@ def main():
     generated_config_dir = output_dir / "configs"
     generated_config_dir.mkdir(parents=True, exist_ok=True)
 
-    correction_strengths = parse_float_list(args.correction_strengths)
+    step_sizes = parse_float_list(args.step_sizes)
     dampings = parse_float_list(args.dampings)
     fisher_batch_sizes = parse_int_list(args.fisher_batch_sizes)
     num_unlearn_steps_values = parse_int_list(args.num_unlearn_steps)
 
     rows = []
     grid = itertools.product(
-        correction_strengths,
+        step_sizes,
         dampings,
         fisher_batch_sizes,
         num_unlearn_steps_values,
     )
 
-    for correction_strength, damping, fisher_batch_size, num_unlearn_steps in grid:
+    for step_size, damping, fisher_batch_size, num_unlearn_steps in grid:
         tag = (
-            f"gamma{format_value(f'{correction_strength:g}')}"
+            f"step{format_value(f'{step_size:g}')}"
             f"_damp{format_value(f'{damping:g}')}"
             f"_full_batch"
             f"_fb{fisher_batch_size}"
@@ -143,7 +142,7 @@ def main():
         run_dir = output_dir / tag
         cfg = OmegaConf.load(base_config_path)
 
-        OmegaConf.update(cfg, "unlearning.correction_strength", correction_strength, merge=True)
+        OmegaConf.update(cfg, "unlearning.step_size", step_size, merge=True)
         OmegaConf.update(cfg, "unlearning.damping_mode", "absolute", merge=True)
         OmegaConf.update(cfg, "unlearning.damping", damping, merge=True)
         OmegaConf.update(cfg, "unlearning.forget_update_mode", "full_batch", merge=True)
@@ -196,7 +195,7 @@ def main():
                 "status": "failed",
                 "returncode": exc.returncode,
                 "error": str(exc),
-                "correction_strength": correction_strength,
+                "step_size": step_size,
                 "damping": damping,
                 "fisher_batch_size": fisher_batch_size,
                 "num_unlearn_steps": num_unlearn_steps,
@@ -214,7 +213,7 @@ def main():
             "status": "ok",
             "returncode": 0,
             "error": "",
-            "correction_strength": correction_strength,
+            "step_size": step_size,
             "damping": damping,
             "fisher_batch_size": fisher_batch_size,
             "num_unlearn_steps": num_unlearn_steps,

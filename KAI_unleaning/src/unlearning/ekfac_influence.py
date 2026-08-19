@@ -5,8 +5,7 @@ The EKFAC paper is an optimizer paper, not an unlearning paper. This module
 uses its inverse empirical-Fisher preconditioner as the curvature inverse in
 the standard influence approximation for removing a forget set:
 
-    theta_retrained ~= theta + correction_strength * removal_scale
-        * G_EKFAC^-1 grad L_forget(theta)
+    theta_retrained ~= theta + step_size * G_EKFAC^-1 grad L_forget(theta)
 
 Supported layers are nn.Linear and nn.Conv2d. Other parameters are frozen by
 default because a batch-mean squared gradient is not a valid per-example
@@ -44,8 +43,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
     def __init__(
         self,
         model,
-        correction_strength: Optional[float] = None,
-        step_size: Optional[float] = None,
+        step_size: float = 0.007,
         damping_mode: str = "absolute",
         damping: float = 0.05,
         damping_ratio: float = 0.1,
@@ -63,12 +61,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         **kwargs,
     ):
         super().__init__(model, **kwargs)
-        # step_size is retained only as a backwards-compatible alias.
-        self.correction_strength = (
-            float(correction_strength)
-            if correction_strength is not None
-            else float(step_size if step_size is not None else 1.0)
-        )
+        self.step_size = float(step_size)
         self.damping_mode = str(damping_mode)
         self.damping = float(damping)
         self.damping_ratio = float(damping_ratio)
@@ -110,7 +103,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
 
         if logger:
             logger.print("\n[bold yellow]=== EKFAC Influence Unlearning ===[/bold yellow]")
-            logger.info(f"  Correction strength (gamma): [cyan]{self.correction_strength}[/cyan]")
+            logger.info(f"  Update step size: [cyan]{self.step_size}[/cyan]")
             logger.info(f"  Damping mode: [cyan]{self.damping_mode}[/cyan]")
             logger.info(f"  Absolute damping: [cyan]{self.damping}[/cyan]")
             logger.info(f"  Relative damping ratio: [cyan]{self.damping_ratio}[/cyan]")
@@ -141,7 +134,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 if retain_samples <= 0:
                     raise ValueError("Retain set must contain at least one sample.")
                 removal_scale = forget_samples / retain_samples
-                effective_step_size = self.correction_strength * removal_scale
+                effective_step_size = self.step_size
                 update_stats = self._apply_influence_update(
                     forget_grads,
                     step_size=effective_step_size,
@@ -150,7 +143,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 step_result = {
                     "step": unlearn_step + 1,
                     "effective_step_size": effective_step_size,
-                    "correction_strength": self.correction_strength,
                     "removal_scale": removal_scale,
                     "curvature_stats": curvature_stats,
                     "forget_stats": forget_stats,
@@ -193,7 +185,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
 
         return {
             "method": self.name,
-            "correction_strength": self.correction_strength,
+            "step_size": self.step_size,
             "damping_mode": self.damping_mode,
             "damping": self.damping,
             "damping_ratio": self.damping_ratio,
@@ -731,7 +723,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         torch.save({
             "model_state_dict": self.model.model.state_dict(),
             "method": self.name,
-            "correction_strength": self.correction_strength,
+            "step_size": self.step_size,
             "damping_mode": self.damping_mode,
             "damping": self.damping,
             "damping_ratio": self.damping_ratio,
