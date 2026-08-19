@@ -150,12 +150,6 @@ def main():
         OmegaConf.update(cfg, "unlearning.forget_update_mode", forget_update_mode, merge=True)
         OmegaConf.update(cfg, "unlearning.fisher_batch_size", fisher_batch_size, merge=True)
         OmegaConf.update(cfg, "unlearning.num_unlearn_steps", num_unlearn_steps, merge=True)
-        OmegaConf.update(
-            cfg,
-            "unlearning.step_size_schedule",
-            [step_size] * num_unlearn_steps,
-            merge=True,
-        )
         OmegaConf.update(cfg, "checkpoint_dir", str(run_dir), merge=True)
 
         if args.max_curvature_batches is not None:

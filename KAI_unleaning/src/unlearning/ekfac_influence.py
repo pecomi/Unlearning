@@ -13,7 +13,7 @@ receive a curvature-scaled update.
 """
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Sequence
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -45,7 +45,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         step_size: float = 0.01,
         damping: float = 1e-3,
         num_unlearn_steps: int = 1,
-        step_size_schedule: Optional[Sequence[float]] = None,
         recompute_curvature_each_step: bool = False,
         unlearn_eval_interval: int = 1,
         max_eval_batches: Optional[int] = None,
@@ -59,7 +58,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         self.step_size = step_size
         self.damping = damping
         self.num_unlearn_steps = max(1, int(num_unlearn_steps))
-        self.step_size_schedule = self._normalize_step_size_schedule(step_size_schedule)
         self.recompute_curvature_each_step = recompute_curvature_each_step
         self.unlearn_eval_interval = max(0, int(unlearn_eval_interval))
         self.max_eval_batches = max_eval_batches
@@ -86,7 +84,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             logger.info(f"  Step size: [cyan]{self.step_size}[/cyan]")
             logger.info(f"  Damping: [cyan]{self.damping}[/cyan]")
             logger.info(f"  Unlearn steps: [cyan]{self.num_unlearn_steps}[/cyan]")
-            logger.info(f"  Step size schedule: [cyan]{self.step_size_schedule or 'disabled'}[/cyan]")
             logger.info(f"  Recompute curvature each step: [cyan]{self.recompute_curvature_each_step}[/cyan]")
             logger.info(f"  Eval interval: [cyan]{self.unlearn_eval_interval or 'disabled'}[/cyan]")
             logger.info(f"  Max eval batches: [cyan]{self.max_eval_batches or 'all'}[/cyan]")
@@ -104,7 +101,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 if self.recompute_curvature_each_step and unlearn_step > 0:
                     curvature_stats = self._estimate_ekfac_curvature(train_loader, logger)
 
-                effective_step_size = self._get_effective_step_size(unlearn_step)
+                effective_step_size = self.step_size
                 if self.forget_update_mode == "minibatch":
                     forget_stats, update_stats = self._run_minibatch_forget_updates(
                         forget_loader,
@@ -163,7 +160,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "step_size": self.step_size,
             "damping": self.damping,
             "num_unlearn_steps": self.num_unlearn_steps,
-            "step_size_schedule": self.step_size_schedule,
             "recompute_curvature_each_step": self.recompute_curvature_each_step,
             "unlearn_eval_interval": self.unlearn_eval_interval,
             "max_eval_batches": self.max_eval_batches,
@@ -561,23 +557,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         wandb.log({"unlearning_eval/validation_history": wandb.Image(fig)}, step=steps[-1])
         plt.close(fig)
 
-    def _normalize_step_size_schedule(self, schedule: Optional[Sequence[float]]) -> Optional[list]:
-        if schedule is None:
-            return None
-
-        schedule = [float(value) for value in schedule]
-        if len(schedule) != self.num_unlearn_steps:
-            raise ValueError(
-                "step_size_schedule length must match num_unlearn_steps "
-                f"({len(schedule)} != {self.num_unlearn_steps})."
-            )
-        return schedule
-
-    def _get_effective_step_size(self, unlearn_step: int) -> float:
-        if self.step_size_schedule is not None:
-            return self.step_size_schedule[unlearn_step]
-        return self.step_size
-
     def _apply_influence_update(self, forget_grads: Dict[str, torch.Tensor], step_size: float) -> dict:
         named_params = dict(self.model.model.named_parameters())
         updates = {}
@@ -688,7 +667,6 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             "step_size": self.step_size,
             "damping": self.damping,
             "num_unlearn_steps": self.num_unlearn_steps,
-            "step_size_schedule": self.step_size_schedule,
             "recompute_curvature_each_step": self.recompute_curvature_each_step,
             "unlearn_eval_interval": self.unlearn_eval_interval,
             "max_eval_batches": self.max_eval_batches,
