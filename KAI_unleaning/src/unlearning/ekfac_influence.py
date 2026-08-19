@@ -46,6 +46,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         model,
         correction_strength: Optional[float] = None,
         step_size: Optional[float] = None,
+        damping_mode: str = "absolute",
+        damping: float = 0.05,
         damping_ratio: float = 0.1,
         damping_floor: float = 1e-8,
         regularization_curvature: float = 0.0,
@@ -67,6 +69,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             if correction_strength is not None
             else float(step_size if step_size is not None else 1.0)
         )
+        self.damping_mode = str(damping_mode)
+        self.damping = float(damping)
         self.damping_ratio = float(damping_ratio)
         self.damping_floor = float(damping_floor)
         self.regularization_curvature = float(regularization_curvature)
@@ -93,6 +97,11 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 "Mini-batch updates are sequential parameter updates and are not "
                 "equivalent to the intended single influence/Newton correction."
             )
+        if self.damping_mode not in {"absolute", "relative"}:
+            raise ValueError(
+                "damping_mode must be either 'absolute' or 'relative' "
+                f"(got {self.damping_mode!r})."
+            )
 
     def unlearn(self, forget_loader, train_loader, **kwargs) -> dict:
         logger = kwargs.get("logger")
@@ -102,6 +111,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         if logger:
             logger.print("\n[bold yellow]=== EKFAC Influence Unlearning ===[/bold yellow]")
             logger.info(f"  Correction strength (gamma): [cyan]{self.correction_strength}[/cyan]")
+            logger.info(f"  Damping mode: [cyan]{self.damping_mode}[/cyan]")
+            logger.info(f"  Absolute damping: [cyan]{self.damping}[/cyan]")
             logger.info(f"  Relative damping ratio: [cyan]{self.damping_ratio}[/cyan]")
             logger.info(f"  Damping floor: [cyan]{self.damping_floor}[/cyan]")
             logger.info(f"  Regularization curvature: [cyan]{self.regularization_curvature}[/cyan]")
@@ -183,6 +194,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         return {
             "method": self.name,
             "correction_strength": self.correction_strength,
+            "damping_mode": self.damping_mode,
+            "damping": self.damping,
             "damping_ratio": self.damping_ratio,
             "damping_floor": self.damping_floor,
             "regularization_curvature": self.regularization_curvature,
@@ -326,11 +339,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             if scaling is None:
                 continue
             state.weight_scaling = scaling["weight"] / scaling["count"]
-            mean_scaling = state.weight_scaling.mean()
-            state.inverse_damping = torch.clamp(
-                self.damping_ratio * mean_scaling,
-                min=self.damping_floor,
-            ) + self.regularization_curvature
+            state.inverse_damping = self._inverse_damping(state.weight_scaling)
 
         self._diag_fisher = {name: value / total for name, value in diag_sums.items()}
         return {"batches": batches, "samples": total, "layers": len(scaling_sums)}
@@ -705,17 +714,26 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         fisher = self._diag_fisher.get(name)
         if fisher is None:
             return grad
-        damping = torch.clamp(
-            self.damping_ratio * fisher.mean(),
-            min=self.damping_floor,
-        ) + self.regularization_curvature
+        damping = self._inverse_damping(fisher)
         return grad / (fisher + damping)
+
+    def _inverse_damping(self, scaling: torch.Tensor) -> torch.Tensor:
+        if self.damping_mode == "absolute":
+            base = scaling.new_tensor(max(self.damping, self.damping_floor))
+        else:
+            base = torch.clamp(
+                self.damping_ratio * scaling.mean(),
+                min=self.damping_floor,
+            )
+        return base + self.regularization_curvature
 
     def save_unlearned_model(self, save_path: str) -> None:
         torch.save({
             "model_state_dict": self.model.model.state_dict(),
             "method": self.name,
             "correction_strength": self.correction_strength,
+            "damping_mode": self.damping_mode,
+            "damping": self.damping,
             "damping_ratio": self.damping_ratio,
             "damping_floor": self.damping_floor,
             "regularization_curvature": self.regularization_curvature,

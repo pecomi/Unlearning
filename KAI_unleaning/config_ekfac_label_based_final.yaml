@@ -38,8 +38,10 @@ training:
 unlearning:
   name: ekfac_influence
   fisher_batch_size: 128
-  # Retune after the scale correction below; 1.0 is the Newton-style reference.
-  correction_strength: 1.0
+  # With a 10% forget split, gamma * |Df|/|Dr| ~= the former 0.007 step.
+  correction_strength: 0.063
+  damping_mode: absolute
+  damping: 0.05
   damping_ratio: 0.1
   damping_floor: 1.0e-8
   regularization_curvature: 5.0e-4

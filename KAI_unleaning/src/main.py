@@ -236,6 +236,8 @@ def main():
             logger.info(f"  • Selection weighting (α): {unlearning_config.get('selection_weighting', 10.0)}")
         elif unlearning_name == "ekfac_influence":
             logger.info(f"  • Correction strength (gamma): {unlearning_config.get('correction_strength', 1.0)}")
+            logger.info(f"  • Damping mode: {unlearning_config.get('damping_mode', 'absolute')}")
+            logger.info(f"  • Absolute damping: {unlearning_config.get('damping', 0.05)}")
             logger.info(f"  • Relative damping ratio: {unlearning_config.get('damping_ratio', 0.1)}")
             logger.info(f"  • Damping floor: {unlearning_config.get('damping_floor', 1e-8)}")
             logger.info(f"  • Update unsupported parameters: {unlearning_config.get('update_unsupported_params', False)}")
@@ -254,6 +256,8 @@ def main():
             selection_weighting=unlearning_config.get("selection_weighting", 10.0),
             correction_strength=unlearning_config.get("correction_strength", None),
             step_size=unlearning_config.get("step_size", None),
+            damping_mode=unlearning_config.get("damping_mode", "absolute"),
+            damping=unlearning_config.get("damping", 0.05),
             damping_ratio=unlearning_config.get("damping_ratio", 0.1),
             damping_floor=unlearning_config.get("damping_floor", 1e-8),
             regularization_curvature=unlearning_config.get(
