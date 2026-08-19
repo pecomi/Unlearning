@@ -23,6 +23,7 @@ model:
   num_classes: 10
 
 training:
+  enable_validation: false
   epochs: 100
   batch_size: 64
   scheduler:

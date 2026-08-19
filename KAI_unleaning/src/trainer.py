@@ -83,6 +83,12 @@ class Trainer:
         # Setup loss function
         criterion = nn.CrossEntropyLoss()
         self.model.model.train()
+        enable_validation = self.config.get("training", {}).get(
+            "enable_validation", True
+        )
+
+        if not enable_validation:
+            self.logger.info("  Validation: disabled")
 
         for epoch in range(epochs):
             # Training phase
@@ -94,16 +100,18 @@ class Trainer:
             if scheduler is not None:
                 scheduler.step()
 
-            val_loss, val_acc = self._validate(val_loader, criterion)
-
             # Log metrics
             metrics = {
                 "train_loss": train_loss,
                 "train_accuracy": train_acc,
-                "val_loss": val_loss,
-                "val_accuracy": val_acc,
                 "learning_rate": optimizer.param_groups[0]["lr"],
             }
+            if enable_validation:
+                val_loss, val_acc = self._validate(val_loader, criterion)
+                metrics.update({
+                    "val_loss": val_loss,
+                    "val_accuracy": val_acc,
+                })
             self.logger.log_metrics(metrics, step=epoch, prefix="train/")
         self.logger.success("Training completed!")
         return self.model.model

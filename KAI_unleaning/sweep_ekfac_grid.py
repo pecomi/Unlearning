@@ -2,6 +2,7 @@ import argparse
 import csv
 import itertools
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +61,9 @@ def write_summary_csv(rows, output_path: Path) -> None:
     )
     fieldnames = [
         "tag",
+        "status",
+        "returncode",
+        "error",
         "step_size",
         "damping",
         "forget_update_mode",
@@ -98,6 +102,12 @@ def main():
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--output-dir", default="./runs/ekfac_grid_search")
     parser.add_argument("--wandb-mode", default=None, choices=[None, "online", "offline", "disabled"])
+    parser.add_argument(
+        "--cuda-alloc-conf",
+        default="expandable_segments:True",
+        help="Value for PYTORCH_CUDA_ALLOC_CONF in child runs. Use '' to leave it unset.",
+    )
+    parser.add_argument("--stop-on-error", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -181,12 +191,37 @@ def main():
         if args.dry_run:
             continue
 
-        subprocess.run(command, check=True)
+        env = os.environ.copy()
+        if args.cuda_alloc_conf:
+            env["PYTORCH_CUDA_ALLOC_CONF"] = args.cuda_alloc_conf
+
+        try:
+            subprocess.run(command, check=True, env=env)
+        except subprocess.CalledProcessError as exc:
+            rows.append({
+                "tag": tag,
+                "status": "failed",
+                "returncode": exc.returncode,
+                "error": str(exc),
+                "step_size": step_size,
+                "damping": damping,
+                "forget_update_mode": forget_update_mode,
+                "fisher_batch_size": fisher_batch_size,
+                "num_unlearn_steps": num_unlearn_steps,
+                "checkpoint_dir": str(run_dir),
+            })
+            if args.stop_on_error:
+                raise
+            print(f"Run failed with return code {exc.returncode}; continuing to next grid item.")
+            continue
 
         result_path = run_dir / "unlearning_result.json"
         result = load_result(result_path)
         rows.append({
             "tag": tag,
+            "status": "ok",
+            "returncode": 0,
+            "error": "",
             "step_size": step_size,
             "damping": damping,
             "forget_update_mode": forget_update_mode,
