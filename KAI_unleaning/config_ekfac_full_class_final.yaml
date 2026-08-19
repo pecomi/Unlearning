@@ -37,15 +37,19 @@ training:
 unlearning:
   name: ekfac_influence
   fisher_batch_size: 128
-  step_size: 0.007
-  damping: 0.05
+  # Retune after the scale correction below; 1.0 is the Newton-style reference.
+  correction_strength: 1.0
+  damping_ratio: 0.1
+  damping_floor: 1.0e-8
+  regularization_curvature: 5.0e-4
+  update_unsupported_params: false
   num_unlearn_steps: 1
   recompute_curvature_each_step: true
   unlearn_eval_interval: 0
   max_eval_batches: null
   max_curvature_batches: null
   max_forget_batches: null
-  forget_update_mode: minibatch
+  forget_update_mode: full_batch
 
 evaluation:
   protocol: final

@@ -5,11 +5,12 @@ The EKFAC paper is an optimizer paper, not an unlearning paper. This module
 uses its inverse empirical-Fisher preconditioner as the curvature inverse in
 the standard influence approximation for removing a forget set:
 
-    theta_retrained ~= theta + step_size * G_EKFAC^-1 grad L_forget(theta)
+    theta_retrained ~= theta + correction_strength * removal_scale
+        * G_EKFAC^-1 grad L_forget(theta)
 
-Supported layers are nn.Linear and nn.Conv2d. Other parameters fall back to a
-diagonal empirical-Fisher preconditioner so residual BatchNorm parameters still
-receive a curvature-scaled update.
+Supported layers are nn.Linear and nn.Conv2d. Other parameters are frozen by
+default because a batch-mean squared gradient is not a valid per-example
+empirical-Fisher estimate. The legacy diagonal fallback is opt-in.
 """
 
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ class _LayerState:
     ua: Optional[torch.Tensor] = None
     ub: Optional[torch.Tensor] = None
     weight_scaling: Optional[torch.Tensor] = None
+    inverse_damping: Optional[torch.Tensor] = None
 
 
 class EKFACInfluenceUnlearning(BaseUnlearning):
@@ -42,8 +44,12 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
     def __init__(
         self,
         model,
-        step_size: float = 0.01,
-        damping: float = 1e-3,
+        correction_strength: Optional[float] = None,
+        step_size: Optional[float] = None,
+        damping_ratio: float = 0.1,
+        damping_floor: float = 1e-8,
+        regularization_curvature: float = 0.0,
+        update_unsupported_params: bool = False,
         num_unlearn_steps: int = 1,
         recompute_curvature_each_step: bool = False,
         unlearn_eval_interval: int = 1,
@@ -55,8 +61,16 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         **kwargs,
     ):
         super().__init__(model, **kwargs)
-        self.step_size = step_size
-        self.damping = damping
+        # step_size is retained only as a backwards-compatible alias.
+        self.correction_strength = (
+            float(correction_strength)
+            if correction_strength is not None
+            else float(step_size if step_size is not None else 1.0)
+        )
+        self.damping_ratio = float(damping_ratio)
+        self.damping_floor = float(damping_floor)
+        self.regularization_curvature = float(regularization_curvature)
+        self.update_unsupported_params = bool(update_unsupported_params)
         self.num_unlearn_steps = max(1, int(num_unlearn_steps))
         self.recompute_curvature_each_step = recompute_curvature_each_step
         self.unlearn_eval_interval = max(0, int(unlearn_eval_interval))
@@ -73,6 +87,12 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 "forget_update_mode must be either 'full_batch' or 'minibatch' "
                 f"(got {self.forget_update_mode!r})."
             )
+        if self.forget_update_mode != "full_batch":
+            raise ValueError(
+                "EKFAC influence unlearning now supports only full_batch updates. "
+                "Mini-batch updates are sequential parameter updates and are not "
+                "equivalent to the intended single influence/Newton correction."
+            )
 
     def unlearn(self, forget_loader, train_loader, **kwargs) -> dict:
         logger = kwargs.get("logger")
@@ -81,8 +101,11 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
 
         if logger:
             logger.print("\n[bold yellow]=== EKFAC Influence Unlearning ===[/bold yellow]")
-            logger.info(f"  Step size: [cyan]{self.step_size}[/cyan]")
-            logger.info(f"  Damping: [cyan]{self.damping}[/cyan]")
+            logger.info(f"  Correction strength (gamma): [cyan]{self.correction_strength}[/cyan]")
+            logger.info(f"  Relative damping ratio: [cyan]{self.damping_ratio}[/cyan]")
+            logger.info(f"  Damping floor: [cyan]{self.damping_floor}[/cyan]")
+            logger.info(f"  Regularization curvature: [cyan]{self.regularization_curvature}[/cyan]")
+            logger.info(f"  Update unsupported parameters: [cyan]{self.update_unsupported_params}[/cyan]")
             logger.info(f"  Unlearn steps: [cyan]{self.num_unlearn_steps}[/cyan]")
             logger.info(f"  Recompute curvature each step: [cyan]{self.recompute_curvature_each_step}[/cyan]")
             logger.info(f"  Eval interval: [cyan]{self.unlearn_eval_interval or 'disabled'}[/cyan]")
@@ -101,22 +124,23 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 if self.recompute_curvature_each_step and unlearn_step > 0:
                     curvature_stats = self._estimate_ekfac_curvature(train_loader, logger)
 
-                effective_step_size = self.step_size
-                if self.forget_update_mode == "minibatch":
-                    forget_stats, update_stats = self._run_minibatch_forget_updates(
-                        forget_loader,
-                        step_size=effective_step_size,
-                    )
-                else:
-                    forget_grads, forget_stats = self._compute_forget_gradient(forget_loader, logger)
-                    update_stats = self._apply_influence_update(
-                        forget_grads,
-                        step_size=effective_step_size,
-                    )
+                forget_grads, forget_stats = self._compute_forget_gradient(forget_loader, logger)
+                forget_samples = len(forget_loader.dataset)
+                retain_samples = len(train_loader.dataset)
+                if retain_samples <= 0:
+                    raise ValueError("Retain set must contain at least one sample.")
+                removal_scale = forget_samples / retain_samples
+                effective_step_size = self.correction_strength * removal_scale
+                update_stats = self._apply_influence_update(
+                    forget_grads,
+                    step_size=effective_step_size,
+                )
 
                 step_result = {
                     "step": unlearn_step + 1,
                     "effective_step_size": effective_step_size,
+                    "correction_strength": self.correction_strength,
+                    "removal_scale": removal_scale,
                     "curvature_stats": curvature_stats,
                     "forget_stats": forget_stats,
                     "update_stats": update_stats,
@@ -126,6 +150,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 if logger:
                     logger.info(f"  Influence update applied ({unlearn_step + 1}/{self.num_unlearn_steps})")
                     logger.info(f"    - Effective step size: {effective_step_size:.6f}")
+                    logger.info(f"    - Removal scale |Df|/|Dr|: {removal_scale:.6f}")
                     logger.info(f"    - Updated parameters: {update_stats['updated_params']:,}")
                     logger.info(f"    - Raw update norm: {update_stats['raw_update_norm']:.6f}")
                     logger.info(f"    - Applied update norm: {update_stats['update_norm']:.6f}")
@@ -157,8 +182,11 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
 
         return {
             "method": self.name,
-            "step_size": self.step_size,
-            "damping": self.damping,
+            "correction_strength": self.correction_strength,
+            "damping_ratio": self.damping_ratio,
+            "damping_floor": self.damping_floor,
+            "regularization_curvature": self.regularization_curvature,
+            "update_unsupported_params": self.update_unsupported_params,
             "num_unlearn_steps": self.num_unlearn_steps,
             "recompute_curvature_each_step": self.recompute_curvature_each_step,
             "unlearn_eval_interval": self.unlearn_eval_interval,
@@ -202,7 +230,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             name: torch.zeros_like(param, device=self.device)
             for name, param in model.named_parameters()
             if param.requires_grad
-        }
+        } if self.update_unsupported_params else {}
         total = 0
         batches = 0
 
@@ -240,7 +268,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 factor_sums[key]["count"] += count
 
             for name, param in model.named_parameters():
-                if param.grad is not None:
+                if name in diag_sums and param.grad is not None:
                     diag_sums[name] += param.grad.detach().pow(2) * batch_size
 
             total += batch_size
@@ -255,8 +283,12 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                 continue
             a = factor["a"] / factor["count"]
             b = factor["b"] / factor["count"]
-            _, state.ua = torch.linalg.eigh(a + self.damping * torch.eye(a.size(0), device=a.device))
-            _, state.ub = torch.linalg.eigh(b + self.damping * torch.eye(b.size(0), device=b.device))
+            _, state.ua = torch.linalg.eigh(
+                a + self.damping_floor * torch.eye(a.size(0), device=a.device)
+            )
+            _, state.ub = torch.linalg.eigh(
+                b + self.damping_floor * torch.eye(b.size(0), device=b.device)
+            )
 
         # Recompute projected second moments once the KFE bases are known.
         batches_for_scaling = 0
@@ -294,6 +326,11 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             if scaling is None:
                 continue
             state.weight_scaling = scaling["weight"] / scaling["count"]
+            mean_scaling = state.weight_scaling.mean()
+            state.inverse_damping = torch.clamp(
+                self.damping_ratio * mean_scaling,
+                min=self.damping_floor,
+            ) + self.regularization_curvature
 
         self._diag_fisher = {name: value / total for name, value in diag_sums.items()}
         return {"batches": batches, "samples": total, "layers": len(scaling_sums)}
@@ -592,6 +629,8 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
                     bias_grad=bias_grad,
                 )
 
+                if weight_update is None:
+                    continue
                 add_update(weight_name, weight_param, weight_update)
                 handled_params.add(weight_name)
                 if bias_param is not None and bias_update is not None:
@@ -600,6 +639,9 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
 
             for name, param in self.model.model.named_parameters():
                 if not param.requires_grad or name not in forget_grads or name in handled_params:
+                    continue
+
+                if not self.update_unsupported_params:
                     continue
 
                 update = self._precondition_gradient(name, forget_grads[name])
@@ -631,8 +673,13 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         weight_grad: torch.Tensor,
         bias_grad: Optional[torch.Tensor],
     ) -> tuple:
-        if state.ua is None or state.ub is None or state.weight_scaling is None:
-            return weight_grad, bias_grad
+        if (
+            state.ua is None
+            or state.ub is None
+            or state.weight_scaling is None
+            or state.inverse_damping is None
+        ):
+            return None, None
 
         matrix_grad = weight_grad.reshape(weight_grad.size(0), -1)
         has_bias = bias_grad is not None
@@ -640,7 +687,7 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
             matrix_grad = torch.cat([matrix_grad, bias_grad.reshape(-1, 1)], dim=1)
 
         projected = state.ub.t().matmul(matrix_grad).matmul(state.ua)
-        projected = projected / (state.weight_scaling + self.damping)
+        projected = projected / (state.weight_scaling + state.inverse_damping)
         preconditioned = state.ub.matmul(projected).matmul(state.ua.t())
 
         if has_bias:
@@ -658,14 +705,21 @@ class EKFACInfluenceUnlearning(BaseUnlearning):
         fisher = self._diag_fisher.get(name)
         if fisher is None:
             return grad
-        return grad / (fisher + self.damping)
+        damping = torch.clamp(
+            self.damping_ratio * fisher.mean(),
+            min=self.damping_floor,
+        ) + self.regularization_curvature
+        return grad / (fisher + damping)
 
     def save_unlearned_model(self, save_path: str) -> None:
         torch.save({
             "model_state_dict": self.model.model.state_dict(),
             "method": self.name,
-            "step_size": self.step_size,
-            "damping": self.damping,
+            "correction_strength": self.correction_strength,
+            "damping_ratio": self.damping_ratio,
+            "damping_floor": self.damping_floor,
+            "regularization_curvature": self.regularization_curvature,
+            "update_unsupported_params": self.update_unsupported_params,
             "num_unlearn_steps": self.num_unlearn_steps,
             "recompute_curvature_each_step": self.recompute_curvature_each_step,
             "unlearn_eval_interval": self.unlearn_eval_interval,

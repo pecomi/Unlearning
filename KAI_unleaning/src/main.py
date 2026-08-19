@@ -235,8 +235,10 @@ def main():
             logger.info(f"  • Dampening constant (λ): {unlearning_config.get('dampening_constant', 1.0)}")
             logger.info(f"  • Selection weighting (α): {unlearning_config.get('selection_weighting', 10.0)}")
         elif unlearning_name == "ekfac_influence":
-            logger.info(f"  • Step size: {unlearning_config.get('step_size', 1.0)}")
-            logger.info(f"  • Damping: {unlearning_config.get('damping', 1e-3)}")
+            logger.info(f"  • Correction strength (gamma): {unlearning_config.get('correction_strength', 1.0)}")
+            logger.info(f"  • Relative damping ratio: {unlearning_config.get('damping_ratio', 0.1)}")
+            logger.info(f"  • Damping floor: {unlearning_config.get('damping_floor', 1e-8)}")
+            logger.info(f"  • Update unsupported parameters: {unlearning_config.get('update_unsupported_params', False)}")
             logger.info(f"  • Unlearn steps: {unlearning_config.get('num_unlearn_steps', 1)}")
             logger.info(f"  • Recompute curvature each step: {unlearning_config.get('recompute_curvature_each_step', False)}")
             logger.info(f"  • Eval interval: {unlearning_config.get('unlearn_eval_interval', 1)}")
@@ -250,8 +252,15 @@ def main():
             model=model,
             dampening_constant=unlearning_config.get("dampening_constant", 1.0),
             selection_weighting=unlearning_config.get("selection_weighting", 10.0),
-            step_size=unlearning_config.get("step_size", 1.0),
-            damping=unlearning_config.get("damping", 1e-3),
+            correction_strength=unlearning_config.get("correction_strength", None),
+            step_size=unlearning_config.get("step_size", None),
+            damping_ratio=unlearning_config.get("damping_ratio", 0.1),
+            damping_floor=unlearning_config.get("damping_floor", 1e-8),
+            regularization_curvature=unlearning_config.get(
+                "regularization_curvature",
+                config.get("training", {}).get("optimizer", {}).get("weight_decay", 0.0),
+            ),
+            update_unsupported_params=unlearning_config.get("update_unsupported_params", False),
             num_unlearn_steps=unlearning_config.get("num_unlearn_steps", 1),
             recompute_curvature_each_step=unlearning_config.get("recompute_curvature_each_step", False),
             unlearn_eval_interval=unlearning_config.get("unlearn_eval_interval", 1),
@@ -262,18 +271,18 @@ def main():
             device=config.get("device", "cuda")
         )
 
-        unlearn_train_dataset = train_loader.dataset
+        # The post-deletion objective is defined on the retain set, so its
+        # curvature and the |Df|/|Dr| removal scale must use retain data.
+        unlearn_train_dataset = retain_loader.dataset
         unlearn_forget_dataset = forget_loader.dataset
         use_full_split_for_unlearn = evaluation_protocol == "final"
         if use_full_split_for_unlearn:
-            val_datasets = []
-            if val_loader is not None and len(val_loader.dataset) > 0:
-                val_datasets.append(val_loader.dataset)
-
-            if val_datasets:
-                unlearn_train_dataset = ConcatDataset([train_loader.dataset, *val_datasets])
+            if retain_val_loader is not None and len(retain_val_loader.dataset) > 0:
+                unlearn_train_dataset = ConcatDataset(
+                    [retain_loader.dataset, retain_val_loader.dataset]
+                )
                 logger.info(
-                    f"Using train + validation split for final unlearning curvature: "
+                    f"Using retain train + retain validation for final unlearning curvature: "
                     f"{len(unlearn_train_dataset)} samples"
                 )
 
