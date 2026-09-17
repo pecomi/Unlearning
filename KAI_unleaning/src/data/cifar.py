@@ -154,8 +154,10 @@ class CIFAR10Dataset(BaseDataset):
 
         # Create subsets
         forget_set = Subset(self.train_dataset, forget_indices)
+        forget_eval_set = Subset(self.eval_train_dataset, forget_indices)
         forget_val_set = Subset(self.eval_train_dataset, forget_val_indices) if forget_val_indices else None
         retain_set = Subset(self.train_dataset, retain_indices)
+        retain_eval_set = Subset(self.eval_train_dataset, retain_indices)
         retain_val_set = Subset(self.eval_train_dataset, retain_val_indices) if retain_val_indices else None
         val_set = Subset(self.eval_train_dataset, val_indices)
 
@@ -166,8 +168,10 @@ class CIFAR10Dataset(BaseDataset):
         return {
             "train_loader": self._create_dataloader(full_train_set, batch_size, True, num_workers, pin_memory=pin_memory),
             "forget_loader": self._create_dataloader(forget_set, eval_batch_size, False, num_workers, pin_memory=pin_memory),
+            "forget_eval_loader": self._create_dataloader(forget_eval_set, eval_batch_size, False, num_workers, pin_memory=pin_memory),
             "forget_val_loader": self._create_dataloader(forget_val_set, eval_batch_size, False, num_workers, pin_memory=pin_memory) if forget_val_set is not None else None,
             "retain_loader": self._create_dataloader(retain_set, batch_size, True, num_workers, pin_memory=pin_memory),
+            "retain_eval_loader": self._create_dataloader(retain_eval_set, eval_batch_size, False, num_workers, pin_memory=pin_memory),
             "retain_val_loader": self._create_dataloader(retain_val_set, eval_batch_size, False, num_workers, pin_memory=pin_memory) if retain_val_set is not None else None,
             "val_loader": self._create_dataloader(val_set, eval_batch_size, False, num_workers, pin_memory=pin_memory),
             "test_loader": self._create_dataloader(self.test_dataset, eval_batch_size, False, num_workers, pin_memory=pin_memory),
@@ -276,8 +280,10 @@ class CIFAR100Dataset(BaseDataset):
 
         # Create subsets
         forget_set = Subset(self.train_dataset, forget_indices)
+        forget_eval_set = Subset(self.eval_train_dataset, forget_indices)
         forget_val_set = Subset(self.eval_train_dataset, forget_val_indices) if forget_val_indices else None
         retain_set = Subset(self.train_dataset, retain_indices)
+        retain_eval_set = Subset(self.eval_train_dataset, retain_indices)
         retain_val_set = Subset(self.eval_train_dataset, retain_val_indices) if retain_val_indices else None
         val_set = Subset(self.eval_train_dataset, val_indices)
         
@@ -287,8 +293,10 @@ class CIFAR100Dataset(BaseDataset):
         return {
             "train_loader": self._create_dataloader(full_train_set, batch_size, True, num_workers, pin_memory=pin_memory),
             "forget_loader": self._create_dataloader(forget_set, eval_batch_size, False, num_workers, pin_memory=pin_memory),
+            "forget_eval_loader": self._create_dataloader(forget_eval_set, eval_batch_size, False, num_workers, pin_memory=pin_memory),
             "forget_val_loader": self._create_dataloader(forget_val_set, eval_batch_size, False, num_workers, pin_memory=pin_memory) if forget_val_set is not None else None,
             "retain_loader": self._create_dataloader(retain_set, batch_size, True, num_workers, pin_memory=pin_memory),
+            "retain_eval_loader": self._create_dataloader(retain_eval_set, eval_batch_size, False, num_workers, pin_memory=pin_memory),
             "retain_val_loader": self._create_dataloader(retain_val_set, eval_batch_size, False, num_workers, pin_memory=pin_memory) if retain_val_set is not None else None,
             "val_loader": self._create_dataloader(val_set, eval_batch_size, False, num_workers, pin_memory=pin_memory),
             "test_loader": self._create_dataloader(self.test_dataset, eval_batch_size, False, num_workers, pin_memory=pin_memory),

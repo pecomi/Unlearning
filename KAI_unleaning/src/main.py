@@ -110,8 +110,10 @@ def main():
 
     train_loader = splits["train_loader"]
     forget_loader = splits["forget_loader"]
+    forget_eval_loader = splits["forget_eval_loader"]
     forget_val_loader = splits.get("forget_val_loader")
     retain_loader = splits["retain_loader"]
+    retain_eval_loader = splits["retain_eval_loader"]
     retain_val_loader = splits.get("retain_val_loader")
     val_loader = splits["val_loader"]
     test_loader = splits["test_loader"]
@@ -183,7 +185,10 @@ def main():
             val_loader=val_loader,
             epochs=training_config.get("epochs", 100),
             optimizer_config=training_config.get("optimizer", {}),
-            scheduler_config=training_config.get("scheduler", {})
+            scheduler_config=training_config.get("scheduler", {}),
+            forget_eval_loader=forget_eval_loader,
+            retain_eval_loader=retain_eval_loader,
+            history_name="baseline",
         )
 
         # 체크포인트 저장
@@ -412,7 +417,10 @@ def main():
             val_loader=val_loader,
             epochs=training_config.get("epochs", 100),
             optimizer_config=training_config.get("optimizer", {}),
-            scheduler_config=training_config.get("scheduler", {})
+            scheduler_config=training_config.get("scheduler", {}),
+            forget_eval_loader=forget_eval_loader,
+            retain_eval_loader=retain_eval_loader,
+            history_name="retrain",
         )
 
         # 체크포인트 저장

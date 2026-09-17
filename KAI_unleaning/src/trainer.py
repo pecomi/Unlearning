@@ -14,6 +14,7 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from utils.logger import get_logger
+from utils.loss_history import save_split_loss_history
 
 
 class Trainer:
@@ -56,7 +57,9 @@ class Trainer:
         )
 
     def train(self, train_loader, val_loader, epochs: int,
-              optimizer_config: dict, scheduler_config: dict) -> nn.Module:
+              optimizer_config: dict, scheduler_config: dict,
+              forget_eval_loader=None, retain_eval_loader=None,
+              history_name: str = "training") -> nn.Module:
         """
         Train the model.
 
@@ -66,6 +69,9 @@ class Trainer:
             epochs: Number of training epochs
             optimizer_config: Optimizer configuration
             scheduler_config: Learning rate scheduler configuration
+            forget_eval_loader: Fixed, augmentation-free forget evaluation data
+            retain_eval_loader: Fixed, augmentation-free retain evaluation data
+            history_name: Prefix for the saved split-history CSV and PNG
 
         Returns:
             Trained model
@@ -83,12 +89,34 @@ class Trainer:
         # Setup loss function
         criterion = nn.CrossEntropyLoss()
         self.model.model.train()
+        if (forget_eval_loader is None) != (retain_eval_loader is None):
+            raise ValueError(
+                "forget_eval_loader and retain_eval_loader must be provided together"
+            )
+        track_split_history = forget_eval_loader is not None
+        split_history = []
         enable_validation = self.config.get("training", {}).get(
             "enable_validation", True
         )
 
         if not enable_validation:
             self.logger.info("  Validation: disabled")
+
+        if track_split_history:
+            forget_loss, forget_acc = self._validate(forget_eval_loader, criterion)
+            retain_loss, retain_acc = self._validate(retain_eval_loader, criterion)
+            split_history.append({
+                "epoch": 0,
+                "train_loss": None,
+                "forget_loss": forget_loss,
+                "retain_loss": retain_loss,
+                "forget_accuracy": forget_acc,
+                "retain_accuracy": retain_acc,
+            })
+            self.logger.info(
+                f"[epoch 000/{epochs:03d}] "
+                f"forget_loss={forget_loss:.6f} retain_loss={retain_loss:.6f}"
+            )
 
         for epoch in range(epochs):
             # Training phase
@@ -112,7 +140,37 @@ class Trainer:
                     "val_loss": val_loss,
                     "val_accuracy": val_acc,
                 })
+            if track_split_history:
+                forget_loss, forget_acc = self._validate(forget_eval_loader, criterion)
+                retain_loss, retain_acc = self._validate(retain_eval_loader, criterion)
+                metrics.update({
+                    "forget_eval_loss": forget_loss,
+                    "retain_eval_loss": retain_loss,
+                    "forget_eval_accuracy": forget_acc,
+                    "retain_eval_accuracy": retain_acc,
+                })
+                split_history.append({
+                    "epoch": epoch + 1,
+                    "train_loss": train_loss,
+                    "forget_loss": forget_loss,
+                    "retain_loss": retain_loss,
+                    "forget_accuracy": forget_acc,
+                    "retain_accuracy": retain_acc,
+                })
             self.logger.log_metrics(metrics, step=epoch, prefix="train/")
+
+        if track_split_history:
+            loss_scale = self.config.get("training", {}).get(
+                "loss_curve_scale", "log"
+            )
+            history_path, curve_path = save_split_loss_history(
+                split_history,
+                self.checkpoint_dir,
+                history_name,
+                loss_scale=loss_scale,
+            )
+            self.logger.success(f"Saved split loss history to: {history_path}")
+            self.logger.success(f"Saved split loss curve to: {curve_path}")
         self.logger.success("Training completed!")
         return self.model.model
 
